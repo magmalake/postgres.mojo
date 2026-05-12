@@ -55,7 +55,7 @@ struct Connection:
 
         Use parameterized queries for untrusted input — for now, callers
         should pre-escape via `escape_literal()`. Native parameter binding
-        (`PQexecParams`) lands in v0.2 (see issue #2).
+        (`PQexecParams`) lands in v0.2 (see issue #4).
         """
         if self._closed:
             raise Error("query on closed connection")

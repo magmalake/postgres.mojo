@@ -152,7 +152,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the longer write-up on FF
 **Alpha.** `v0.1.0` is the first public release. The FFI layer binds real `libpq` symbols and smoke tests pass against `libpq` 16+. Expect:
 
 - API shape may still shift in `v0.2`.
-- A few rough edges are tracked as [`good first issue`](https://github.com/dvirarad/mojo-postgres/labels/good%20first%20issue) — including [parameterized queries via `PQexecParams`](https://github.com/dvirarad/mojo-postgres/issues/2), [a typed `PostgresErrorKind`](https://github.com/dvirarad/mojo-postgres/issues/3), [`COPY` streaming](https://github.com/dvirarad/mojo-postgres/issues/4), and [connection pooling](https://github.com/dvirarad/mojo-postgres/issues/1).
+- A few rough edges are tracked as [`good first issue`](https://github.com/dvirarad/mojo-postgres/labels/good%20first%20issue) — including [parameterized queries via `PQexecParams`](https://github.com/dvirarad/mojo-postgres/issues/4), [a typed `PostgresErrorKind`](https://github.com/dvirarad/mojo-postgres/issues/5), [`COPY` streaming](https://github.com/dvirarad/mojo-postgres/issues/6), and [connection pooling](https://github.com/dvirarad/mojo-postgres/issues/3).
 
 Use it in spikes and prototypes today. Wait for `v1.0` before betting a production pipeline.
 

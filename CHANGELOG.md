@@ -20,10 +20,10 @@ Initial public alpha.
 - Project hygiene: `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`, `CODEOWNERS`, issue / PR templates, Dependabot for GitHub Actions, CodeQL scanning.
 
 ### Known limitations
-- No parameter binding yet — callers must build SQL by hand (#2).
-- No typed `PostgresErrorKind` enum — error codes are raw `Int32` (#3).
-- No `COPY` streaming (#4).
-- No connection pooling (#1).
+- No parameter binding yet — callers must build SQL by hand (#4).
+- No typed `PostgresErrorKind` enum — error codes are raw `Int32` (#5).
+- No `COPY` streaming (#6).
+- No connection pooling (#3).
 
 [Unreleased]: https://github.com/dvirarad/mojo-postgres/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/dvirarad/mojo-postgres/releases/tag/v0.1.0

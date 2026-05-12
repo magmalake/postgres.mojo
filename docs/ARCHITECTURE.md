@@ -78,7 +78,7 @@ libpq returns errors in two places: connection-level (`PQstatus` + `PQerrorMessa
 2. Check `PQresultStatus` after every `PQexec` and raise on anything other than `PGRES_COMMAND_OK` or `PGRES_TUPLES_OK`.
 3. Wrap the message + status into our `PostgresError(code: Int32, message: String)` and `raise`.
 
-The roadmap is to expose a typed `PostgresErrorKind` enum keyed on the [SQLSTATE](https://www.postgresql.org/docs/current/errcodes-appendix.html) class so users can `match` on `unique_violation` / `serialization_failure` / etc. instead of comparing magic numbers — see [#3](https://github.com/dvirarad/mojo-postgres/issues/3).
+The roadmap is to expose a typed `PostgresErrorKind` enum keyed on the [SQLSTATE](https://www.postgresql.org/docs/current/errcodes-appendix.html) class so users can `match` on `unique_violation` / `serialization_failure` / etc. instead of comparing magic numbers — see [#5](https://github.com/dvirarad/mojo-postgres/issues/5).
 
 ## conninfo rendering
 
@@ -90,9 +90,9 @@ libpq accepts either a connection URI (`postgresql://user:pass@host:port/db`) or
 ## What we do *not* do
 
 - We don't ship `libpq` itself. We dynamic-link against whatever the user provides (system package, conda-forge, or vendored).
-- We don't implement `PQexecParams` parameter binding yet — that's [#2](https://github.com/dvirarad/mojo-postgres/issues/2).
+- We don't implement `PQexecParams` parameter binding yet — that's [#4](https://github.com/dvirarad/mojo-postgres/issues/4).
 - We don't expose libpq's async API (`PQsendQuery` / `PQconsumeInput`). The Mojo idiom is a synchronous call; we lean into that for v0.1.
-- We don't pool connections. That's [#1](https://github.com/dvirarad/mojo-postgres/issues/1).
+- We don't pool connections. That's [#3](https://github.com/dvirarad/mojo-postgres/issues/3).
 
 ## Testing strategy
 
