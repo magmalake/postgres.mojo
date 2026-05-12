@@ -32,8 +32,7 @@ fn main() raises:
     # Seed table so the example is runnable standalone.
     _ = conn.query("DROP TABLE IF EXISTS mojo_features")
     _ = conn.query(
-        "CREATE TABLE mojo_features (id SERIAL PRIMARY KEY, x"
-        " DOUBLE PRECISION)"
+        "CREATE TABLE mojo_features (id SERIAL PRIMARY KEY, x DOUBLE PRECISION)"
     )
     for i in range(5):
         _ = conn.query(

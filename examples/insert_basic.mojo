@@ -26,9 +26,7 @@ fn main() raises:
 
     for i in range(5):
         var sql = (
-            "INSERT INTO mojo_events (name) VALUES ('event-"
-            + String(i)
-            + "')"
+            "INSERT INTO mojo_events (name) VALUES ('event-" + String(i) + "')"
         )
         var ins = conn.query(sql)
         print("inserted", ins.rows_affected(), "row(s)")

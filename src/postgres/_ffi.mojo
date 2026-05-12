@@ -63,9 +63,9 @@ fn PQstatus(conn: OpaquePointer) -> Int32:
 
 
 fn PQerrorMessage(conn: OpaquePointer) -> String:
-    var p = external_call[
-        "PQerrorMessage", UnsafePointer[Int8], OpaquePointer
-    ](conn)
+    var p = external_call["PQerrorMessage", UnsafePointer[Int8], OpaquePointer](
+        conn
+    )
     return String(p)
 
 
@@ -127,9 +127,9 @@ fn PQnfields(res: OpaquePointer) -> Int32:
 
 
 fn PQfname(res: OpaquePointer, col: Int32) -> String:
-    var p = external_call[
-        "PQfname", UnsafePointer[Int8], OpaquePointer, Int32
-    ](res, col)
+    var p = external_call["PQfname", UnsafePointer[Int8], OpaquePointer, Int32](
+        res, col
+    )
     return String(p)
 
 
@@ -141,25 +141,23 @@ fn PQgetvalue(res: OpaquePointer, row: Int32, col: Int32) -> String:
 
 
 fn PQgetisnull(res: OpaquePointer, row: Int32, col: Int32) -> Int32:
-    return external_call[
-        "PQgetisnull", Int32, OpaquePointer, Int32, Int32
-    ](res, row, col)
+    return external_call["PQgetisnull", Int32, OpaquePointer, Int32, Int32](
+        res, row, col
+    )
 
 
 fn PQcmdTuples(res: OpaquePointer) -> String:
     """Number of rows affected by an INSERT/UPDATE/DELETE (as a string)."""
-    var p = external_call[
-        "PQcmdTuples", UnsafePointer[Int8], OpaquePointer
-    ](res)
+    var p = external_call["PQcmdTuples", UnsafePointer[Int8], OpaquePointer](
+        res
+    )
     return String(p)
 
 
 # --- escaping ---------------------------------------------------------------
 
 
-fn PQescapeLiteral(
-    conn: OpaquePointer, s: String
-) -> UnsafePointer[Int8]:
+fn PQescapeLiteral(conn: OpaquePointer, s: String) -> UnsafePointer[Int8]:
     """Caller must `PQfreemem` the returned pointer."""
     return external_call[
         "PQescapeLiteral",

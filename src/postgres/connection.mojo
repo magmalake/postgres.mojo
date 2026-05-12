@@ -61,9 +61,7 @@ struct Connection:
             raise Error("query on closed connection")
         var res = PQexec(self._conn, sql)
         if not res:
-            raise Error(
-                "PQexec returned null: " + PQerrorMessage(self._conn)
-            )
+            raise Error("PQexec returned null: " + PQerrorMessage(self._conn))
         var r = Result(res)
         r._check_status()
         return r

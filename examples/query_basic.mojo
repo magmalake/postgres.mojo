@@ -23,9 +23,7 @@ fn main() raises:
     )
     var conn = Connection(cfg)
 
-    var res = conn.query(
-        "SELECT version(), current_database(), current_user"
-    )
+    var res = conn.query("SELECT version(), current_database(), current_user")
     for col in range(res.ncols()):
         print(res.column_name(col), end=" | ")
     print()
