@@ -17,15 +17,25 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.utils.numerics import isinf, isnan
 
 from postgres import (
+    COPY_CSV,
+    COPY_TEXT,
     Connection,
+    CopyDecoder,
+    CopyEncoder,
+    CopyIn,
+    CopyOut,
     OID_INT4,
     OID_TEXT,
     Params,
     Result,
     Row,
     Statement,
+    Transaction,
+    decode_row,
+    split_rows,
     sqlstate_of,
 )
+from postgres._ffi import PQTRANS_IDLE, PQTRANS_INERROR, PQTRANS_INTRANS
 
 
 # ===----------------------------------------------------------------------===#
@@ -76,6 +86,31 @@ def _connect() raises -> Connection:
         Error: If the server refused the connection.
     """
     return Connection(_dsn())
+
+
+def _keepalive(var conn: Connection):
+    """Destroy `conn` *here*, rather than wherever Mojo would have chosen.
+
+    Mojo destroys a value immediately after its **last use**, not at the end
+    of the scope.  A `Statement`, a `Transaction` and both COPY handles hold
+    the raw connection handle rather than a reference to the `Connection` --
+    that is what keeps them free of an origin parameter -- so nothing stops
+    the compiler from closing the connection while one of them is still in
+    flight:
+
+    ```mojo
+    var out = conn.copy_out("COPY t TO STDOUT")   # `conn` is used for the
+    var lines = out.rows()                        # last time above: closed!
+    ```
+
+    Calling this at the end of the test is how that is pinned down: passing
+    `conn^` is a use, so the connection lives until this line.  Any later use
+    of `conn` -- `conn.ping()` at the end of a test, say -- does the same job.
+
+    Args:
+        conn: The connection to consume, and thereby close, right here.
+    """
+    _ = conn^
 
 
 # ===----------------------------------------------------------------------===#
@@ -738,6 +773,679 @@ def test_iterating_an_empty_result_yields_nothing() raises:
     for _ in res:
         seen += 1
     assert_equal(seen, 0)
+
+
+# ===----------------------------------------------------------------------===#
+# Transactions
+#
+# A ``TEMP`` table is session-local, so the tests that need a *second*
+# connection to see (or not see) a row use a real table with a name of its own,
+# dropped on the way in.  Everything else stays temporary.
+# ===----------------------------------------------------------------------===#
+
+
+def _fresh_table(mut conn: Connection, name: String) raises:
+    """Create `name` as an empty ``(id bigint primary key)`` table.
+
+    Args:
+        conn: The connection to create it on.
+        name: The table name; dropped first if it survived an earlier run.
+
+    Raises:
+        Error: If the DDL failed.
+    """
+    _ = conn.execute("DROP TABLE IF EXISTS " + name)
+    _ = conn.execute("CREATE TABLE " + name + " (id bigint primary key)")
+
+
+def _count(mut conn: Connection, name: String) raises -> Int64:
+    """The number of rows in `name`.
+
+    Args:
+        conn: The connection to count on.
+        name: The table name.
+
+    Returns:
+        ``SELECT count(*)``.
+
+    Raises:
+        Error: If the query failed.
+    """
+    return conn.query("SELECT count(*) AS n FROM " + name).row(0).int64("n")
+
+
+def test_commit_is_visible_from_another_connection() raises:
+    """The whole point of committing: somebody else can see it.
+
+    Checked from a second `Connection` rather than the one that wrote it,
+    because the writing session sees its own uncommitted rows and would
+    therefore pass this test with no ``COMMIT`` at all.
+    """
+    var conn = _connect()
+    _fresh_table(conn, "tx_commit")
+    var other = _connect()
+    var tx = conn.begin()
+    assert_equal(conn.transaction_status(), PQTRANS_INTRANS)
+    assert_equal(
+        tx.execute("INSERT INTO tx_commit VALUES ($1)", Params().int64(1)), 1
+    )
+    assert_equal(_count(other, "tx_commit"), 0, "an open block was visible")
+    tx.commit()
+    assert_false(tx.is_open(), "commit() left the transaction open")
+    assert_equal(conn.transaction_status(), PQTRANS_IDLE)
+    assert_equal(_count(other, "tx_commit"), 1, "the commit was not visible")
+    _ = conn.execute("DROP TABLE tx_commit")
+
+
+def test_rollback_leaves_the_row_observably_absent() raises:
+    """And the other half: after a rollback the row was never there."""
+    var conn = _connect()
+    _fresh_table(conn, "tx_rollback")
+    var tx = conn.begin()
+    _ = tx.execute("INSERT INTO tx_rollback VALUES ($1)", Params().int64(1))
+    assert_equal(
+        _count(conn, "tx_rollback"), 1, "the writer cannot see its own row"
+    )
+    tx.rollback()
+    assert_equal(_count(conn, "tx_rollback"), 0, "the rollback kept the row")
+    assert_equal(conn.transaction_status(), PQTRANS_IDLE)
+
+    # A finished transaction is finished: using it again raises rather than
+    # silently running the statement outside any block.
+    var raised = False
+    try:
+        _ = tx.execute("INSERT INTO tx_rollback VALUES ($1)", Params().int64(2))
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "25P01")
+    assert_true(raised, "a finished transaction accepted a statement")
+    assert_equal(_count(conn, "tx_rollback"), 0)
+    _ = conn.execute("DROP TABLE tx_rollback")
+
+
+def _insert_then_abandon(mut conn: Connection) raises:
+    """Insert a row inside a transaction and let the guard go out of scope.
+
+    The transaction is a local of *this* function, so it is destroyed when the
+    function returns -- which is the case the destructor exists for.
+
+    Args:
+        conn: The connection to write on.
+
+    Raises:
+        Error: If the insert failed.
+    """
+    var tx = conn.begin()
+    _ = tx.execute("INSERT INTO tx_deinit VALUES ($1)", Params().int64(1))
+
+
+def test_a_transaction_destroyed_without_commit_rolls_back() raises:
+    """Forgetting to commit undoes the block; it never half-applies it."""
+    var conn = _connect()
+    _fresh_table(conn, "tx_deinit")
+    _insert_then_abandon(conn)
+    assert_equal(
+        _count(conn, "tx_deinit"), 0, "an abandoned transaction was committed"
+    )
+    assert_equal(conn.transaction_status(), PQTRANS_IDLE)
+    _ = conn.execute("DROP TABLE tx_deinit")
+
+
+def test_a_with_block_commits_only_when_asked() raises:
+    """``with conn.begin() as tx:`` binds the guard and does not commit for you.
+
+    Leaving the block destroys the guard, which rolls back -- so the explicit
+    `Transaction.commit` is what separates the two halves of this test.
+    """
+    var conn = _connect()
+    _fresh_table(conn, "tx_with")
+
+    with conn.begin() as tx:
+        _ = tx.execute("INSERT INTO tx_with VALUES ($1)", Params().int64(1))
+        tx.commit()
+    assert_equal(_count(conn, "tx_with"), 1, "the committed block was lost")
+
+    with conn.begin() as tx2:
+        _ = tx2.execute("INSERT INTO tx_with VALUES ($1)", Params().int64(2))
+    assert_equal(
+        _count(conn, "tx_with"), 1, "leaving the block committed it implicitly"
+    )
+    assert_equal(conn.transaction_status(), PQTRANS_IDLE)
+    _ = conn.execute("DROP TABLE tx_with")
+
+
+def test_a_savepoint_survives_a_failed_statement() raises:
+    """The one way to keep a transaction after a statement inside it failed.
+
+    Without the savepoint the block would be in `_ffi.PQTRANS_INERROR` and
+    would accept nothing but a rollback; with it, the failure is undone and
+    the rest of the block still commits.
+    """
+    var conn = _connect()
+    _fresh_table(conn, "tx_savepoint")
+    var tx = conn.begin()
+    _ = tx.execute("INSERT INTO tx_savepoint VALUES ($1)", Params().int64(1))
+
+    tx.savepoint("dup")
+    var raised = False
+    try:
+        _ = tx.execute(
+            "INSERT INTO tx_savepoint VALUES ($1)", Params().int64(1)
+        )
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "23505")
+    assert_true(raised, "the duplicate key did not raise")
+    assert_equal(
+        conn.transaction_status(),
+        PQTRANS_INERROR,
+        "a failed statement did not put the block in the failed state",
+    )
+
+    tx.rollback_to("dup")
+    assert_equal(
+        conn.transaction_status(),
+        PQTRANS_INTRANS,
+        "rollback_to() did not clear the failed state",
+    )
+    _ = tx.execute("INSERT INTO tx_savepoint VALUES ($1)", Params().int64(2))
+    tx.release("dup")
+    tx.commit()
+
+    var res = conn.query("SELECT id FROM tx_savepoint ORDER BY id")
+    assert_equal(res.num_rows(), 2, "the surviving rows were not committed")
+    assert_equal(res.row(0).int64("id"), 1)
+    assert_equal(res.row(1).int64("id"), 2)
+    _ = conn.execute("DROP TABLE tx_savepoint")
+
+
+def test_committing_a_failed_block_raises_25p02_and_cleans_up() raises:
+    """PostgreSQL would answer this ``COMMIT`` with a silent ``ROLLBACK``.
+
+    Which is the worst possible outcome: the caller is told the block
+    committed, and nothing was written.  `Transaction.commit` raises ``25P02``
+    instead -- and still issues the rollback, so the connection is idle and
+    usable straight afterwards.
+    """
+    var conn = _connect()
+    _fresh_table(conn, "tx_failed")
+    var tx = conn.begin()
+    _ = tx.execute("INSERT INTO tx_failed VALUES ($1)", Params().int64(1))
+    try:
+        _ = tx.execute("INSERT INTO tx_failed VALUES ($1)", Params().int64(1))
+    except:
+        pass
+    assert_equal(conn.transaction_status(), PQTRANS_INERROR)
+
+    var raised = False
+    try:
+        tx.commit()
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "25P02")
+        assert_true("aborted" in String(e), "unexpected message: " + String(e))
+    assert_true(raised, "committing a failed block reported success")
+
+    assert_equal(
+        conn.transaction_status(),
+        PQTRANS_IDLE,
+        "the failed block was left open",
+    )
+    assert_equal(_count(conn, "tx_failed"), 0, "the failed block was committed")
+    assert_true(conn.ping(), "the connection did not survive")
+    assert_equal(conn.last_error().sqlstate, "25P02")
+    _ = conn.execute("DROP TABLE tx_failed")
+
+
+def test_begin_inside_a_transaction_raises() raises:
+    """A nested ``BEGIN`` is a warning to PostgreSQL and a bug to us.
+
+    The server would ignore it, leaving the inner guard's ``COMMIT`` to end
+    the *outer* block -- exactly the confusion the guard exists to prevent.
+    """
+    var conn = _connect()
+    var tx = conn.begin()
+    var raised = False
+    try:
+        var nested = conn.begin()
+        _ = nested^
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "25001")
+        assert_true(
+            "already open" in String(e), "unexpected message: " + String(e)
+        )
+    assert_true(raised, "a nested begin() was accepted")
+    tx.rollback()
+    # The outer block is still the one that was open, and it still works.
+    var second = conn.begin()
+    second.rollback()
+    _keepalive(conn^)  # `conn` must outlive both transactions
+
+
+def test_last_error_sees_statement_and_transaction_failures() raises:
+    """`Connection.last_error` is the connection's, not one method's.
+
+    A `Statement` and a `Transaction` both hold the raw connection handle
+    rather than a reference to the `Connection`, so they reach the same error
+    cell through a shared pointer; without it, an error raised through either
+    would be invisible to `Connection.last_error`.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE le (id int primary key)")
+
+    var stmt = conn.prepare("le_ins", "INSERT INTO le VALUES ($1)")
+    _ = stmt.execute(Params().int32(1))
+    var raised = False
+    try:
+        _ = stmt.execute(Params().int32(1))
+    except:
+        raised = True
+    assert_true(raised, "the duplicate key did not raise")
+    assert_equal(
+        conn.last_error().sqlstate,
+        "23505",
+        "an error raised through a Statement was not recorded",
+    )
+    assert_true(conn.last_error().is_unique_violation())
+
+    var tx = conn.begin()
+    var raised_tx = False
+    try:
+        _ = tx.execute("SELECT * FROM no_such_table_at_all")
+    except:
+        raised_tx = True
+    assert_true(raised_tx, "the missing table did not raise")
+    assert_equal(
+        conn.last_error().sqlstate,
+        "42P01",
+        "an error raised through a Transaction was not recorded",
+    )
+    tx.rollback()
+    _keepalive(conn^)  # `conn` must outlive `stmt` and `tx`
+
+
+# ===----------------------------------------------------------------------===#
+# COPY
+# ===----------------------------------------------------------------------===#
+
+
+def test_copy_in_loads_ten_thousand_rows_and_copy_out_reads_them_back() raises:
+    """The bulk path, at a size where a per-row mistake would show.
+
+    Ten thousand rows in and back out again: `CopyIn.finish` reports the
+    count, the server agrees, and every row survives the round trip through
+    `copyfmt.CopyEncoder` and `copyfmt.decode_row`.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE bulk (id bigint, name text)")
+
+    var cp = conn.copy_in("COPY bulk (id, name) FROM STDIN")
+    var enc = CopyEncoder(COPY_TEXT)
+    for i in range(10_000):
+        enc.field(String(i))
+        enc.field("row " + String(i))
+        enc.end_row()
+        if enc.size() > 1 << 16:
+            cp.write_rows(enc)
+    cp.write_rows(enc)
+    assert_equal(cp.finish(), 10_000, "finish() miscounted the rows")
+    assert_false(cp.is_open(), "finish() left the COPY open")
+    assert_equal(_count(conn, "bulk"), Int64(10_000), "the server disagrees")
+
+    var out = conn.copy_out("COPY bulk TO STDOUT")
+    var lines = out.rows()
+    assert_equal(len(lines), 10_000, "copy_out lost rows")
+    var first = decode_row(lines[0], COPY_TEXT, "\t", "\\N")
+    assert_equal(len(first), 2)
+    assert_equal(first[0].value(), "0")
+    assert_equal(first[1].value(), "row 0")
+    var last = decode_row(lines[9_999], COPY_TEXT, "\t", "\\N")
+    assert_equal(last[0].value(), "9999")
+    assert_equal(last[1].value(), "row 9999")
+    assert_true(conn.ping(), "the connection did not survive the COPY")
+
+
+def test_copy_round_trips_nulls_tabs_and_backslashes() raises:
+    """The values text format has to escape, and the one it must not.
+
+    A literal ``\\N`` in a column is the trap: the encoder writes it as
+    ``\\\\N``, which is a two-character string, while an unescaped ``\\N`` is
+    the NULL marker.  Reading the table back through `CopyOut` is the only way
+    to prove the server saw the difference the same way.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE odd (k int, v text)")
+
+    var cp = conn.copy_in("COPY odd (k, v) FROM STDIN")
+    var enc = CopyEncoder(COPY_TEXT)
+    enc.field("1")
+    enc.null()  # SQL NULL
+    enc.end_row()
+    enc.field("2")
+    enc.field("")  # the empty string, which is not NULL
+    enc.end_row()
+    enc.field("3")
+    enc.field("a\tb")  # a real tab, which is the delimiter
+    enc.end_row()
+    enc.field("4")
+    enc.field("back\\slash")
+    enc.end_row()
+    enc.field("5")
+    enc.field("\\N")  # the *literal* two characters, not NULL
+    enc.end_row()
+    cp.write_rows(enc)
+    assert_equal(cp.finish(), 5)
+
+    var res = conn.query("SELECT k, v FROM odd ORDER BY k")
+    assert_equal(res.num_rows(), 5)
+    assert_true(res.row(0).is_null("v"), "the NULL did not survive")
+    assert_false(res.row(1).is_null("v"), "the empty string became NULL")
+    assert_equal(res.row(1).text("v"), "")
+    assert_equal(res.row(2).text("v"), "a\tb")
+    assert_equal(res.row(3).text("v"), "back\\slash")
+    assert_equal(res.row(4).text("v"), "\\N")
+
+    # ... and the same five values back out through COPY.
+    var out = conn.copy_out("COPY (SELECT v FROM odd ORDER BY k) TO STDOUT")
+    var lines = out.rows()
+    assert_equal(len(lines), 5)
+    var dec = CopyDecoder(COPY_TEXT)
+    assert_false(Bool(dec.decode_row(lines[0])[0]), "NULL came back as a value")
+    assert_equal(dec.decode_row(lines[1])[0].value(), "")
+    assert_equal(dec.decode_row(lines[2])[0].value(), "a\tb")
+    assert_equal(dec.decode_row(lines[3])[0].value(), "back\\slash")
+    assert_equal(dec.decode_row(lines[4])[0].value(), "\\N")
+    _keepalive(conn^)  # `conn` must outlive `out`
+
+
+def test_copy_in_and_out_in_csv_format() raises:
+    """The other sub-format, declared on the statement rather than the handle.
+
+    ``(FORMAT csv)`` changes the delimiter, the quoting and the NULL
+    convention all at once, so the encoder and decoder have to be told the
+    same thing the SQL was.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE csvt (k int, v text)")
+
+    var cp = conn.copy_in("COPY csvt (k, v) FROM STDIN (FORMAT csv)")
+    var enc = CopyEncoder(COPY_CSV)
+    enc.row([Optional[String]("1"), Optional[String]("plain")])
+    enc.row([Optional[String]("2"), Optional[String]('quote " and, comma')])
+    enc.row([Optional[String]("3"), None])
+    enc.row([Optional[String]("4"), Optional[String]("")])
+    cp.write_rows(enc)
+    assert_equal(cp.finish(), 4)
+
+    var res = conn.query("SELECT k, v FROM csvt ORDER BY k")
+    assert_equal(res.row(0).text("v"), "plain")
+    assert_equal(res.row(1).text("v"), 'quote " and, comma')
+    assert_true(res.row(2).is_null("v"), "the CSV NULL did not survive")
+    assert_equal(
+        res.row(3).text("v"), "", "the quoted empty string became NULL"
+    )
+
+    var out = conn.copy_out(
+        "COPY (SELECT v FROM csvt ORDER BY k) TO STDOUT (FORMAT csv)"
+    )
+    var lines = out.rows()
+    assert_equal(len(lines), 4)
+    var dec = CopyDecoder(COPY_CSV)
+    assert_equal(dec.decode_row(lines[1])[0].value(), 'quote " and, comma')
+    assert_false(
+        Bool(dec.decode_row(lines[2])[0]), "CSV NULL came back a value"
+    )
+    assert_equal(dec.decode_row(lines[3])[0].value(), "")
+    _keepalive(conn^)  # `conn` must outlive `out`
+
+
+def test_a_malformed_copy_row_raises_22p02_at_finish() raises:
+    """The server validates as it reads, and reports at the end.
+
+    `CopyIn.write` only queues bytes, so a row the server rejects surfaces
+    from `CopyIn.finish` -- with the type's own SQLSTATE and the offending
+    line in the error's context.  What matters as much is the aftermath: the
+    connection has to be idle and usable, not stuck mid-COPY.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE bad (id bigint)")
+    var cp = conn.copy_in("COPY bad (id) FROM STDIN")
+    cp.write("1\n2\nnot-a-number\n4\n")
+
+    var raised = False
+    try:
+        _ = cp.finish()
+    except e:
+        raised = True
+        var message = String(e)
+        assert_equal(sqlstate_of(e), "22P02")
+        assert_true("not-a-number" in message, "unexpected message: " + message)
+    assert_true(raised, "a malformed COPY row did not raise")
+    assert_equal(conn.last_error().sqlstate, "22P02")
+
+    # The whole COPY is one statement: it rolled back, and the connection is
+    # ready for the next command.
+    assert_equal(conn.transaction_status(), PQTRANS_IDLE)
+    assert_equal(_count(conn, "bad"), 0, "a failed COPY left rows behind")
+    assert_true(conn.ping(), "a failed COPY broke the connection")
+
+
+def test_aborting_a_copy_leaves_the_table_empty() raises:
+    """`CopyIn.abort` throws the stream away without raising.
+
+    The deliberate counterpart to `CopyIn.finish` -- and the same thing the
+    destructor does for a handle that is simply dropped.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE ab (id bigint)")
+    var cp = conn.copy_in("COPY ab (id) FROM STDIN")
+    cp.write("1\n2\n3\n")
+    cp.abort("changed my mind")
+    assert_false(cp.is_open(), "abort() left the COPY open")
+    assert_equal(_count(conn, "ab"), 0, "an aborted COPY loaded rows")
+    assert_true(conn.ping(), "an aborted COPY broke the connection")
+
+    # A dropped handle aborts the same way.
+    _drop_a_copy_in(conn)
+    assert_equal(_count(conn, "ab"), 0, "a dropped COPY handle loaded rows")
+    assert_true(conn.ping(), "a dropped COPY handle broke the connection")
+
+
+def _drop_a_copy_in(mut conn: Connection) raises:
+    """Start a COPY, write to it, and let the handle go out of scope.
+
+    Args:
+        conn: The connection to run the COPY on.
+
+    Raises:
+        Error: If the COPY could not be started.
+    """
+    var cp = conn.copy_in("COPY ab (id) FROM STDIN")
+    cp.write("7\n8\n")
+
+
+def test_copy_out_matches_the_psql_fixture_format() raises:
+    """What `CopyOut.rows` hands back is what ``psql`` prints, byte for byte.
+
+    The same three-column shape `tests/test_copyfmt.mojo` pins as a fixture,
+    but taken from the server through this module rather than pasted in: if
+    the two ever disagree, one of them is wrong about the wire format.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE fx (k int, a text, b text, c text)")
+    _ = conn.execute(
+        "INSERT INTO fx VALUES (1, E'a\\tb', NULL, 'x\"y'),"
+        " (2, 'plain', 'plain', 'plain'), (3, '', E'line\\nbreak', 'z')"
+    )
+
+    var out = conn.copy_out(
+        "COPY (SELECT a, b, c FROM fx ORDER BY k) TO STDOUT"
+    )
+    var lines = out.rows()
+    assert_equal(len(lines), 3)
+    # Exactly what `psql -c "COPY (SELECT E'a\tb', NULL, 'x\"y') TO STDOUT"`
+    # prints, and exactly what `CopyEncoder` produces for the same values.
+    assert_equal(lines[0], 'a\\tb\t\\N\tx"y')
+    assert_equal(lines[1], "plain\tplain\tplain")
+    assert_equal(lines[2], "\tline\\nbreak\tz")
+
+    var enc = CopyEncoder(COPY_TEXT)
+    var row: List[Optional[String]] = [
+        Optional[String]("a\tb"),
+        None,
+        Optional[String]('x"y'),
+    ]
+    enc.row(row)
+    assert_equal(
+        String(from_utf8=Span(enc.take())),
+        lines[0] + "\n",
+        "the encoder and the server disagree about text format",
+    )
+
+    # `split_rows` over the raw stream sees the same three rows: the embedded
+    # newline is escaped in text format, so nothing is split in the wrong
+    # place.
+    var whole = conn.copy_out(
+        "COPY (SELECT a, b, c FROM fx ORDER BY k) TO STDOUT"
+    )
+    var buffer = whole.read_all()
+    var split = split_rows(Span(buffer))
+    assert_equal(len(split[0]), 3)
+    assert_equal(split[1], "", "read_all() ended mid-row")
+    assert_equal(split[0][0], lines[0])
+    _keepalive(conn^)  # `conn` must outlive `out` and `whole`
+
+
+def _abandon_a_copy_out(mut conn: Connection) raises:
+    """Read one row of a COPY OUT and drop the handle.
+
+    Args:
+        conn: The connection to run the COPY on.
+
+    Raises:
+        Error: If the COPY could not be started or the first row not read.
+    """
+    var out = conn.copy_out("COPY series TO STDOUT")
+    var chunk = List[UInt8]()
+    assert_true(out.next(chunk), "the COPY delivered no rows at all")
+    assert_true(len(chunk) > 0, "the first row was empty")
+
+
+def test_abandoning_a_copy_out_leaves_the_connection_usable() raises:
+    """PostgreSQL cannot cancel a ``COPY TO STDOUT``; the handle drains it.
+
+    Which is the whole reason `CopyOut` has a destructor: a caller who stops
+    reading half way -- because it found what it wanted, or because something
+    raised -- would otherwise leave the connection stuck in COPY mode, where
+    every later command fails.
+    """
+    var conn = _connect()
+    _ = conn.execute(
+        "CREATE TEMP TABLE series AS SELECT generate_series(1, 5000) AS n"
+    )
+    _abandon_a_copy_out(conn)
+    assert_equal(
+        conn.transaction_status(),
+        PQTRANS_IDLE,
+        "the abandoned COPY left the connection busy",
+    )
+    assert_equal(_count(conn, "series"), Int64(5000), "the next query failed")
+    assert_true(conn.ping(), "an abandoned COPY broke the connection")
+
+
+def test_copy_in_of_a_statement_that_is_not_a_copy_raises() raises:
+    """Asking for a COPY handle over a plain ``SELECT`` is a programming error.
+
+    It has to be caught here, because there is no COPY for the handle to
+    drive: libpq would report the mismatch only as a confusing failure on the
+    first write.
+    """
+    var conn = _connect()
+    var raised = False
+    try:
+        var cp = conn.copy_in("SELECT 1")
+        _ = cp^
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "42809")
+        assert_true(
+            "FROM STDIN" in String(e), "unexpected message: " + String(e)
+        )
+    assert_true(raised, "copy_in() accepted a plain SELECT")
+    assert_true(conn.ping(), "the rejected copy_in() broke the connection")
+
+    var raised_out = False
+    try:
+        var out = conn.copy_out("SELECT 1")
+        _ = out^
+    except e:
+        raised_out = True
+        assert_equal(sqlstate_of(e), "42809")
+    assert_true(raised_out, "copy_out() accepted a plain SELECT")
+
+    # A COPY of a table that does not exist is the server's error, not ours.
+    var raised_missing = False
+    try:
+        var cp2 = conn.copy_in("COPY no_such_table FROM STDIN")
+        _ = cp2^
+    except e:
+        raised_missing = True
+        assert_equal(sqlstate_of(e), "42P01")
+    assert_true(raised_missing, "COPY of a missing table did not raise")
+    assert_true(conn.ping(), "the failed COPY broke the connection")
+
+
+def test_a_copy_in_the_wrong_direction_is_ended_not_left_running() raises:
+    """``copy_in`` handed a ``TO STDOUT`` starts a COPY nobody will finish.
+
+    The rejection is the easy half; the connection is the hard one.  A ``COPY
+    TO STDOUT`` that nothing consumes holds the session for good, so the
+    mismatch has to be drained before the error is raised.
+    """
+    var conn = _connect()
+    _ = conn.execute(
+        "CREATE TEMP TABLE wd AS SELECT generate_series(1, 200) AS n"
+    )
+    var raised = False
+    try:
+        var cp = conn.copy_in("COPY wd TO STDOUT")
+        _ = cp^
+    except e:
+        raised = True
+        assert_equal(sqlstate_of(e), "42809")
+    assert_true(raised, "copy_in() accepted a COPY TO STDOUT")
+    assert_equal(
+        conn.transaction_status(),
+        PQTRANS_IDLE,
+        "the mismatched COPY was left holding the connection",
+    )
+    assert_equal(_count(conn, "wd"), Int64(200), "the next query failed")
+
+    # ... and the mirror image, which libpq leaves waiting for data.
+    var raised_out = False
+    try:
+        var out = conn.copy_out("COPY wd FROM STDIN")
+        _ = out^
+    except e:
+        raised_out = True
+        assert_equal(sqlstate_of(e), "42809")
+    assert_true(raised_out, "copy_out() accepted a COPY FROM STDIN")
+    assert_equal(_count(conn, "wd"), Int64(200), "the aborted COPY added rows")
+    assert_true(conn.ping(), "the mismatched COPY broke the connection")
+
+
+def test_copy_in_inside_a_transaction_rolls_back_with_it() raises:
+    """``COPY`` is a statement like any other: the block decides its fate."""
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE txcopy (id bigint)")
+    var tx = conn.begin()
+    var cp = conn.copy_in("COPY txcopy (id) FROM STDIN")
+    cp.write("1\n2\n3\n")
+    assert_equal(cp.finish(), 3)
+    assert_equal(_count(conn, "txcopy"), 3, "the writer cannot see its rows")
+    tx.rollback()
+    assert_equal(_count(conn, "txcopy"), 0, "the COPY outlived its transaction")
 
 
 def main() raises:

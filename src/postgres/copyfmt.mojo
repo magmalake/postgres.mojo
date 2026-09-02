@@ -106,12 +106,15 @@ struct CopyEncoder(Movable):
         """Configure the encoder.
 
         Args:
+            format: `COPY_TEXT` or `COPY_CSV`.
+            delimiter: One-byte field separator. Defaults to tab (text) or
+                comma (CSV).
+            null: The NULL marker. Defaults to `\\N` (text) or the empty
+                string (CSV) — PostgreSQL's own defaults for each sub-format.
 
-        format: `COPY_TEXT` or `COPY_CSV`.
-        delimiter: One-byte field separator. Defaults to tab (text) or comma
-            (CSV).
-        null: The NULL marker. Defaults to `\\N` (text) or the empty string
-            (CSV) — PostgreSQL's own defaults for each sub-format.
+        Raises:
+            Error: If `format` is neither sub-format, or `delimiter` is not
+                exactly one byte.
         """
         if format != COPY_TEXT and format != COPY_CSV:
             raise Error(

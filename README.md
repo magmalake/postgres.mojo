@@ -53,7 +53,7 @@ Under construction — see the milestones in
 
 - [x] **M1** connect and query: `Connection`, text results by index and name, errors with SQLSTATE
 - [x] **M2** parameters and statements: `PQexecParams`, prepared statements, the `Params` builder, the full type table
-- [ ] **M3** transactions and `COPY`
+- [x] **M3** transactions and `COPY`: `Transaction` with savepoints and rollback on drop, `CopyIn`/`CopyOut`
 - [ ] **M4** a Postgres-backed Iceberg catalog, in [iceberg.mojo](https://github.com/magmalake/iceberg.mojo)
 
 ## Test

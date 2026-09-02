@@ -1,9 +1,10 @@
 """`postgres` — a PostgreSQL client for Mojo, over libpq.
 
-Connections, parameterised statements, prepared statements, and typed results,
-with every server error carrying its SQLSTATE.  libpq is loaded at run time
-from the conda-forge build in ``$CONDA_PREFIX`` (which links OpenSSL, so
-``sslmode=require`` works), and every C call lives behind `postgres._ffi`.
+Connections, parameterised statements, prepared statements, typed results,
+transactions and ``COPY``, with every server error carrying its SQLSTATE.
+libpq is loaded at run time from the conda-forge build in ``$CONDA_PREFIX``
+(which links OpenSSL, so ``sslmode=require`` works), and every C call lives
+behind `postgres._ffi`.
 
 ```mojo
 from postgres import Connection, Params, sqlstate_of
@@ -51,6 +52,46 @@ NULL cell.
 **No ORM, no async, no pooling.**  One `Connection` is one `PGconn`, usable
 from one thread, and you write the SQL.
 
+## Transactions and COPY
+
+`connection.Connection.begin` issues ``BEGIN`` and returns a
+`connection.Transaction` that **rolls back when it is destroyed** unless
+`connection.Transaction.commit` ran first -- so an early return or a raised
+error leaves nothing behind rather than half a block.  Savepoints are
+`connection.Transaction.savepoint`, `connection.Transaction.rollback_to` and
+`connection.Transaction.release`; a savepoint is how a statement that failed
+inside a block is survived, because PostgreSQL otherwise refuses everything
+until the block ends.  Committing a block that has already failed raises
+SQLSTATE ``25P02`` rather than quietly rolling back the way the server would:
+
+```mojo
+var tx = conn.begin()
+_ = tx.execute("INSERT INTO t VALUES ($1)", Params().int64(1))
+tx.savepoint("maybe")
+try:
+    _ = tx.execute("INSERT INTO t VALUES ($1)", Params().int64(1))
+except:
+    tx.rollback_to("maybe")      # the duplicate is undone; the first row stays
+tx.commit()
+```
+
+``COPY`` is the bulk path -- no per-row parse, plan or round trip.
+`connection.Connection.copy_in` returns a `copy.CopyIn` to write rows into
+(`copyfmt.CopyEncoder` produces the bytes; `copy.CopyIn.finish` returns the
+row count and is where a malformed row is reported), and
+`connection.Connection.copy_out` returns a `copy.CopyOut` to read them back
+(`copy.CopyOut.rows` pairs with `copyfmt.decode_row`).  Both handles clean up
+after themselves if dropped, so an abandoned COPY leaves a usable connection:
+
+```mojo
+var cp = conn.copy_in("COPY t (id, name) FROM STDIN")
+var enc = CopyEncoder()
+enc.row([Optional[String]("1"), Optional[String]("Ada")])
+enc.row([Optional[String]("2"), None])          # None is SQL NULL
+cp.write_rows(enc)
+print(cp.finish(), "rows")                      # 2
+```
+
 **Typed accessors trust you, not the OID.**  `row.int64("n")` parses the
 cell's text as an `int8` whatever the server called the column; a mismatch
 surfaces as the codec's own error, naming the type and the text.
@@ -75,7 +116,8 @@ message; `sqlstate_of` reads it back out of a caught `Error`, and
 
 ## Modules
 
-- `postgres.connection` -- `Connection`, `Statement`.
+- `postgres.connection` -- `Connection`, `Statement`, `Transaction`.
+- `postgres.copy` -- `CopyIn` and `CopyOut`, the ``COPY`` stream handles.
 - `postgres.result` -- `Result`, `Row` and the typed accessors.
 - `postgres.params` -- the `Params` builder for ``$1``-style parameters.
 - `postgres.config` -- `ConnectionConfig`, for callers who prefer typed fields
@@ -87,7 +129,16 @@ message; `sqlstate_of` reads it back out of a caught `Error`, and
 """
 
 from .config import ConnectionConfig
-from .connection import Connection, Statement
+from .connection import Connection, Statement, Transaction
+from .copy import CopyIn, CopyOut
+from .copyfmt import (
+    COPY_CSV,
+    COPY_TEXT,
+    CopyDecoder,
+    CopyEncoder,
+    decode_row,
+    split_rows,
+)
 from .params import Params
 from .result import Result, Row
 from .sqlstate import (

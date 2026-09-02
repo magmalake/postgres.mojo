@@ -901,36 +901,51 @@ struct LibpqFFI(Movable):
 
     # -- COPY ----------------------------------------------------------------
 
-    def PQputCopyData(self, conn: PGconnPtr, data: List[UInt8]) -> Int:
+    def PQputCopyData(self, conn: PGconnPtr, data: Span[UInt8, _]) -> Int:
         """Send one chunk of ``COPY ... FROM STDIN`` data.
 
         Chunks need not align with row boundaries, but `LibpqFFI.PQputCopyEnd`
         must not be called mid-row.  libpq copies `data` into its own buffer
-        before returning, so nothing has to be kept alive afterwards.
+        before returning, so nothing has to be kept alive afterwards, and the
+        explicit byte count means embedded NULs are sent faithfully.
 
         Args:
             conn: The connection handle, with a COPY IN in progress.
-            data: The raw bytes to send; an empty list is a no-op.
+            data: The raw bytes to send; an empty span is a no-op.
 
         Returns:
             ``1`` when the data was queued, ``0`` when it could not be (never
             on a blocking connection), or ``-1`` on error -- the reason is in
             `LibpqFFI.PQerrorMessage`.
         """
-        if len(data) == 0:
+        var n = len(data)
+        if n == 0:
             return 1
         return Int(
-            self._fn_put_copy_data(
-                conn, Int(data.unsafe_ptr()), Int32(len(data))
-            )
+            self._fn_put_copy_data(conn, Int(data.unsafe_ptr()), Int32(n))
         )
+
+    def PQputCopyData(self, conn: PGconnPtr, data: List[UInt8]) -> Int:
+        """Send one chunk of ``COPY ... FROM STDIN`` data.
+
+        The overload for a buffer a caller owns -- what
+        `copyfmt.CopyEncoder.take` hands back.
+
+        Args:
+            conn: The connection handle, with a COPY IN in progress.
+            data: The raw bytes to send; an empty list is a no-op.
+
+        Returns:
+            ``1`` when the data was queued, ``0`` when it could not be, or
+            ``-1`` on error.
+        """
+        return self.PQputCopyData(conn, Span(data))
 
     def PQputCopyData(self, conn: PGconnPtr, data: String) -> Int:
         """Send one chunk of ``COPY ... FROM STDIN`` data as text.
 
         The overload for the text and CSV COPY formats, which `copy.mojo`
-        produces as `String`.  The explicit byte count means no NUL-terminated
-        copy is needed and embedded NULs would be sent faithfully.
+        produces as `String`.
 
         Args:
             conn: The connection handle, with a COPY IN in progress.
@@ -940,13 +955,7 @@ struct LibpqFFI(Movable):
             ``1`` when the data was queued, ``0`` when it could not be, or
             ``-1`` on error.
         """
-        var n = data.byte_length()
-        if n == 0:
-            return 1
-        var rc = Int(
-            self._fn_put_copy_data(conn, Int(data.unsafe_ptr()), Int32(n))
-        )
-        return rc
+        return self.PQputCopyData(conn, data.as_bytes())
 
     def PQputCopyEnd(
         self, conn: PGconnPtr, errormsg: String = String("")
