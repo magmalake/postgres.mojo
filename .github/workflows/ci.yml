@@ -1,64 +1,34 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install pixi
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | bash
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
-
-      - name: Resolve env
-        run: pixi install
-
-      - name: Mojo version
-        run: pixi run -- mojo --version
-
-      - name: Format check
-        run: |
-          pixi run -- mojo format src/ examples/ tests/
-          if ! git diff --quiet; then
-            echo "::error::Formatting drift — run 'pixi run -- mojo format src/ examples/ tests/' locally and commit."
-            git --no-pager diff
-            exit 1
-          fi
-
-  env-check:
-    name: Env (${{ matrix.os }})
+  test:
+    name: ${{ matrix.env == 'default' && 'nightly' || matrix.env }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        env: [default, stable]
+
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - name: Install pixi
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | bash
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+      - uses: prefix-dev/setup-pixi@v0.9.0
+        with:
+          # Pinned: the committed lock file is written by 0.78.0, and an
+          # unpinned pixi rejects it as not up-to-date with the workspace.
+          pixi-version: v0.78.0
+          environments: ${{ matrix.env }}
 
-      - name: Resolve env
-        run: pixi install
-
-      - name: Mojo version
-        run: pixi run -- mojo --version
-
-      - name: libpq headers present
-        run: |
-          test -f "$(pixi run -- bash -c 'echo $CONDA_PREFIX')/include/libpq-fe.h"
-          echo "✓ libpq-fe.h resolves inside the pixi env"
+      # `unit` needs no server. `server` starts a throwaway PostgreSQL cluster
+      # from the conda `postgresql` package (no Docker, no service container —
+      # GitHub's macOS runners have neither), runs the live suite and the
+      # psql/psycopg cross-check against it, and stops it on exit.
+      - name: Tests
+        run: pixi run -e ${{ matrix.env }} test

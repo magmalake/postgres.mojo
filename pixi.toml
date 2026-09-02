@@ -1,21 +1,90 @@
 [workspace]
-name = "mojo-postgres"
-version = "0.1.0"
-description = "PostgreSQL client for Mojo — libpq bindings"
-authors = ["Dvir Arad <dvirarad@users.noreply.github.com>"]
-channels = ["https://conda.modular.com/max", "conda-forge"]
-platforms = ["linux-64", "osx-arm64"]
+authors = [
+    "Dvir Arad <dvirarad@users.noreply.github.com>",
+    "Marius S <39998+winding-lines@users.noreply.github.com>",
+]
+name = "postgres.mojo"
+version = "0.2.0"
+description = "A Mojo PostgreSQL client over libpq via FFI: connections, parameterized statements, typed text-format results, transactions and COPY."
 license = "Apache-2.0"
-
-[tasks]
-example-query = "mojo run examples/query_basic.mojo"
-example-insert = "mojo run examples/insert_basic.mojo"
-example-ml = "mojo run examples/ml_pipeline.mojo"
-lint = "mojo format src/ examples/ tests/"
-package = "mojo package src/postgres -o dist/postgres.mojopkg"
-test = "mojo run tests/test_smoke.mojo"
+preview = ["pixi-build"]
+channels = [
+    "https://conda.modular.com/max-nightly",
+    "conda-forge",
+]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 
 [dependencies]
-max = "==25.7.0"
-mojo = "==0.25.7.0"
-libpq = ">=16.0"
+# libpq is what the FFI dlopens ($CONDA_PREFIX/lib/libpq.{so.5,5.dylib}). The
+# conda-forge build links OpenSSL, so `sslmode=require` works out of the box.
+libpq = ">=16,<19"
+# The full server (initdb, pg_ctl, pg_isready, psql, createdb) is only used by
+# the tests: scripts/pg-server.sh starts a throwaway cluster on a free port, so
+# no Docker, no service container, and the same flow on macOS and Linux.
+postgresql = ">=16,<19"
+# psycopg (v3) is the cross-check oracle: rows written by this tin are read
+# back with it, and rows it writes are read back here, cell for cell.
+python = ">=3.11"
+psycopg = ">=3.2"
+
+[tasks]
+# Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
+# Params builder, the COPY encoder, and a PQlibVersion() call that proves the
+# library loads from $CONDA_PREFIX.
+unit = "sh tests/run_unit.sh"
+# Everything that needs a live server: run_tests.sh starts one, exports
+# POSTGRES_TEST_DSN, runs the server suite and the psql/psycopg cross-check,
+# and stops it again on exit.
+server = "sh tests/run_tests.sh"
+test = { depends-on = ["unit", "server"] }
+
+format = "mojo format src tests examples bench"
+# `mojo format` has no check mode in 1.0.0, so the check is: format, then
+# assert the tree did not move.
+format-check = { cmd = "mojo format src tests examples bench && git diff --exit-code -- src tests examples bench" }
+
+[feature.nightly.dependencies]
+modular = ">=26.6.0.dev2026082605,<27"
+
+[feature.stable.dependencies]
+mojo-compiler = "==1.0.0"
+
+# Benchmarks run through the shared harness (magmalake/bench.mojo) and get
+# their own feature, so the tin stays out of the environments that run tests.
+# Stable only: a precompiled Mojo package is stamped with the compiler version
+# that built it, and tins build with 1.0.0.
+[feature.bench.dependencies]
+bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "971759f58b862cfaa8fdef8708cd42f52ac719f9" }
+
+[feature.bench.tasks]
+bench = "sh scripts/with-pg-server.sh mojo run -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo"
+
+[environments]
+default = ["nightly"]
+stable = ["stable"]
+bench = ["stable", "bench"]
+
+# ── pixi-build: consumable as a pixi source dependency ──────────────────────
+# Conda package name is postgres-mojo (conda-forge owns "postgresql"); the
+# Mojo import stays `from postgres import …`.
+[package]
+name = "postgres-mojo"
+version = "0.2.0"
+
+[package.build]
+backend = { name = "pixi-build-mojo", version = "0.*" }
+
+[package.build.config.pkg]
+path = "src/postgres"
+name = "postgres"
+
+[package.host-dependencies]
+mojo-compiler = "==1.0.0"
+libpq = ">=16,<19"
+
+[package.build-dependencies]
+mojo-compiler = "==1.0.0"
+
+[package.run-dependencies]
+mojo-compiler = ">=1.0.0,<2"
+libpq = ">=16,<19"

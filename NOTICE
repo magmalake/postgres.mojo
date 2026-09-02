@@ -1,0 +1,10 @@
+Copyright 2026 Marius Seritan
+
+This software is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+This repository is a fork of dvirarad/mojo-postgres
+(https://github.com/dvirarad/mojo-postgres), Copyright 2026 Dvir Arad,
+also licensed under the Apache License, Version 2.0. The package layout, the
+connection-string builder and the original libpq symbol inventory come from
+that work.
