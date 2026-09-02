@@ -145,7 +145,7 @@ def bench_copy_in_100k(mut b: Benchmark) raises:
 
     b.iter[call]()
     keep(payload)
-    _ = conn.server_version()  # `conn` must outlive the COPY handles
+    _ = conn.server_version()  # a use after `b.iter`: the capture stays live
 
 
 def bench_select_scan_100k(mut b: Benchmark) raises:
@@ -192,7 +192,7 @@ def bench_insert_prepared_10k(mut b: Benchmark) raises:
             )
 
     b.iter[call]()
-    _ = conn.server_version()  # `conn` must outlive `stmt`
+    _ = conn.server_version()  # a use after `b.iter`: the capture stays live
 
 
 def bench_select_by_id_10k(mut b: Benchmark) raises:

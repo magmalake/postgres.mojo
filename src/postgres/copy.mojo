@@ -38,7 +38,8 @@ state imposes.
 **A COPY holds the connection.**  From the moment `connection.Connection.copy_in`
 or `connection.Connection.copy_out` returns until the handle is finished,
 aborted or destroyed, the connection is in COPY mode and will accept nothing
-else.  Both handles therefore clean up after themselves when destroyed --
+else -- and the handle keeps that connection open for as long as it lives, so
+the `Connection` value may be dropped in the meantime.  Both handles therefore clean up after themselves when destroyed --
 `CopyIn` aborts, `CopyOut` drains -- so a handle that goes out of scope early
 leaves a connection that still works.  Draining is the only way out of a
 ``COPY TO STDOUT`` short of closing the connection: PostgreSQL has no cancel
@@ -57,7 +58,8 @@ from std.memory import ArcPointer
 from ._ffi import PGconnPtr, libpq
 from ._ffi import PGRES_COPY_IN, PGRES_COPY_OUT
 from .connection import (
-    _ErrorCell,
+    _ConnCell,
+    _open_conn,
     _raise_error,
     discard_copy_quietly,
     drain_results,
@@ -117,40 +119,33 @@ struct CopyIn(Movable):
     stream carried.  Nothing is half-loaded either way, since ``COPY`` is a
     single statement and rolls back as one.
 
-    Like `connection.Statement`, this holds the raw connection handle, so:
-    **a `CopyIn` must not outlive its `Connection`** -- and Mojo destroys a
-    value after its *last use*, not at the end of the block, which
-    `connection.Statement` documents along with the ``_ = conn^`` that settles
-    it.
+    Like `connection.Statement`, this shares ownership of the connection
+    rather than borrowing it, so the session stays open for as long as the
+    COPY does even if the `Connection` value was dropped first -- which Mojo
+    does at its last use.  An explicit `connection.Connection.close` ends the
+    COPY: every call then raises SQLSTATE ``08006``.
     """
 
-    var _conn: PGconnPtr
-    """The connection the COPY is running on; borrowed, never finished here."""
-    var _errors: ArcPointer[_ErrorCell]
-    """The connection's shared error cell, so `last_error` sees COPY errors."""
+    var _cell: ArcPointer[_ConnCell]
+    """The connection the COPY is running on, shared; see `_ConnCell`."""
     var _sql: String
     """The ``COPY`` statement, kept for error messages."""
     var _done: Bool
     """True once finished or aborted; silences the destructor."""
 
-    def __init__(
-        out self,
-        conn: PGconnPtr,
-        errors: ArcPointer[_ErrorCell],
-        sql: String,
-    ):
+    def __init__(out self, cell: ArcPointer[_ConnCell], sql: String):
         """Record a COPY that libpq has already put into `PGRES_COPY_IN`.
 
         `connection.Connection.copy_in` is the only intended caller: it runs
         the statement and checks the status before constructing this.
 
         Args:
-            conn: The connection the COPY is running on.
-            errors: That connection's shared error cell.
+            cell: The shared cell of the connection the COPY is running on; a
+                share of it is kept, so the connection stays open at least as
+                long as this handle does.
             sql: The ``COPY`` statement text.
         """
-        self._conn = conn
-        self._errors = errors
+        self._cell = cell
         self._sql = sql
         self._done = False
 
@@ -159,10 +154,11 @@ struct CopyIn(Movable):
 
         The server is told the stream failed and discards it, and the
         outstanding results are drained so the connection is idle again.
-        Errors are swallowed -- a destructor has nobody to raise to.
+        Errors are swallowed -- a destructor has nobody to raise to -- and a
+        connection that has been closed is left alone.
         """
-        if not self._done:
-            discard_copy_quietly(self._conn, PGRES_COPY_IN)
+        if not self._done and self._cell[].conn != 0:
+            discard_copy_quietly(self._cell[].conn, PGRES_COPY_IN)
 
     # -- state ---------------------------------------------------------------
 
@@ -178,7 +174,7 @@ struct CopyIn(Movable):
         """Raise unless the COPY is still open."""
         if self._done:
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="ERROR",
                     sqlstate=String(CONNECTION_FAILURE),
@@ -206,10 +202,9 @@ struct CopyIn(Movable):
                 reported here; see `CopyIn.finish`.
         """
         self._check_open()
-        if libpq().PQputCopyData(self._conn, data) < 0:
-            _raise_error(
-                self._errors, _put_failed(self._conn, self._sql.copy())
-            )
+        var conn = _open_conn(self._cell)
+        if libpq().PQputCopyData(conn, data) < 0:
+            _raise_error(self._cell, _put_failed(conn, self._sql.copy()))
 
     def write(mut self, data: String) raises:
         """Queue `data` as the next bytes of the COPY stream.
@@ -248,10 +243,9 @@ struct CopyIn(Movable):
         if len(bytes) == 0:
             return
         self._check_open()
-        if libpq().PQputCopyData(self._conn, bytes) < 0:
-            _raise_error(
-                self._errors, _put_failed(self._conn, self._sql.copy())
-            )
+        var conn = _open_conn(self._cell)
+        if libpq().PQputCopyData(conn, bytes) < 0:
+            _raise_error(self._cell, _put_failed(conn, self._sql.copy()))
 
     # -- ending the stream ---------------------------------------------------
 
@@ -274,13 +268,14 @@ struct CopyIn(Movable):
                 idle and usable afterwards either way.
         """
         self._check_open()
+        var conn = _open_conn(self._cell)
         self._done = True
-        if libpq().PQputCopyEnd(self._conn) < 0:
-            var err = _put_failed(self._conn, self._sql.copy())
-            drain_results_quietly(self._conn)
-            _raise_error(self._errors, err)
+        if libpq().PQputCopyEnd(conn) < 0:
+            var err = _put_failed(conn, self._sql.copy())
+            drain_results_quietly(conn)
+            _raise_error(self._cell, err)
         # A copy of `_sql`, not the field itself; see `connection.Statement`.
-        return drain_results(self._conn, self._errors, self._sql.copy())
+        return drain_results(conn, self._cell, self._sql.copy())
 
     def abort(mut self, reason: String = "COPY aborted by the client") raises:
         """End the stream by failing it, so the server discards every row.
@@ -298,9 +293,10 @@ struct CopyIn(Movable):
                 abort itself is silent, whatever libpq makes of it.
         """
         self._check_open()
+        var conn = _open_conn(self._cell)
         self._done = True
-        _ = libpq().PQputCopyEnd(self._conn, reason)
-        drain_results_quietly(self._conn)
+        _ = libpq().PQputCopyEnd(conn, reason)
+        drain_results_quietly(conn)
 
 
 # ===----------------------------------------------------------------------===#
@@ -332,45 +328,40 @@ struct CopyOut(Movable):
     connection.  Dropping the handle early therefore drains the rest of the
     stream in `CopyOut.__deinit__` -- correct, and on a large table not free.
 
-    Like `connection.Statement`, this holds the raw connection handle, so:
-    **a `CopyOut` must not outlive its `Connection`** -- and since the handle
-    is normally used *after* the last mention of the connection, this is the
-    type where Mojo's destroy-after-last-use rule bites first:
+    Like `connection.Statement`, this shares ownership of the connection
+    rather than borrowing it, which matters most here: the handle is normally
+    used *after* the last mention of the connection, and Mojo destroys a value
+    at its last use.  The session stays open for the stream either way.
 
     ```mojo
-    var out = conn.copy_out("COPY t TO STDOUT")   # last mention of `conn`
-    var lines = out.rows()                        # ... which is closed by now
-    _ = conn^                                     # put this after `out`'s use
+    var out = conn.copy_out("COPY t TO STDOUT")   # last mention of `conn`,
+    var lines = out.rows()                        # and the stream is still up
     ```
+
+    An explicit `connection.Connection.close` is the exception, and ends the
+    stream: every call then raises SQLSTATE ``08006``.
     """
 
-    var _conn: PGconnPtr
-    """The connection the COPY is running on; borrowed, never finished here."""
-    var _errors: ArcPointer[_ErrorCell]
-    """The connection's shared error cell, so `last_error` sees COPY errors."""
+    var _cell: ArcPointer[_ConnCell]
+    """The connection the COPY is running on, shared; see `_ConnCell`."""
     var _sql: String
     """The ``COPY`` statement, kept for error messages."""
     var _done: Bool
     """True once the stream has been read to its end."""
 
-    def __init__(
-        out self,
-        conn: PGconnPtr,
-        errors: ArcPointer[_ErrorCell],
-        sql: String,
-    ):
+    def __init__(out self, cell: ArcPointer[_ConnCell], sql: String):
         """Record a COPY that libpq has already put into `PGRES_COPY_OUT`.
 
         `connection.Connection.copy_out` is the only intended caller: it runs
         the statement and checks the status before constructing this.
 
         Args:
-            conn: The connection the COPY is running on.
-            errors: That connection's shared error cell.
+            cell: The shared cell of the connection the COPY is running on; a
+                share of it is kept, so the connection stays open at least as
+                long as this handle does.
             sql: The ``COPY`` statement text.
         """
-        self._conn = conn
-        self._errors = errors
+        self._cell = cell
         self._sql = sql
         self._done = False
 
@@ -379,10 +370,11 @@ struct CopyOut(Movable):
 
         There is no way to tell the server to stop, so the rest of the rows
         are read and dropped and the outstanding results are drained.  Errors
-        are swallowed -- a destructor has nobody to raise to.
+        are swallowed -- a destructor has nobody to raise to -- and a
+        connection that has been closed is left alone.
         """
-        if not self._done:
-            discard_copy_quietly(self._conn, PGRES_COPY_OUT)
+        if not self._done and self._cell[].conn != 0:
+            discard_copy_quietly(self._cell[].conn, PGRES_COPY_OUT)
 
     # -- state ---------------------------------------------------------------
 
@@ -419,17 +411,18 @@ struct CopyOut(Movable):
         chunk.clear()
         if self._done:
             return False
-        var n = libpq().PQgetCopyData(self._conn, chunk)
+        var conn = _open_conn(self._cell)
+        var n = libpq().PQgetCopyData(conn, chunk)
         if n > 0:
             return True
         self._done = True
         if n == -2:
-            var message = libpq().PQerrorMessage(self._conn)
+            var message = libpq().PQerrorMessage(conn)
             if message.byte_length() == 0:
                 message = String("the COPY data could not be read")
-            drain_results_quietly(self._conn)
+            drain_results_quietly(conn)
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="FATAL",
                     sqlstate=String(CONNECTION_FAILURE),
@@ -438,7 +431,7 @@ struct CopyOut(Movable):
                 ),
             )
         # -1: the stream ended.  The terminating result carries the verdict.
-        _ = drain_results(self._conn, self._errors, self._sql.copy())
+        _ = drain_results(conn, self._cell, self._sql.copy())
         return False
 
     def read_all(mut self) raises -> List[UInt8]:

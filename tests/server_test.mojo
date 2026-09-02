@@ -80,37 +80,13 @@ def _connect() raises -> Connection:
     """Open a connection to the test server.
 
     Returns:
-        A live `Connection`, closed when the caller drops it.
+        A live `Connection`, closed when the last thing holding it -- this
+        value, or a handle made from it -- is dropped.
 
     Raises:
         Error: If the server refused the connection.
     """
     return Connection(_dsn())
-
-
-def _keepalive(var conn: Connection):
-    """Destroy `conn` *here*, rather than wherever Mojo would have chosen.
-
-    Mojo destroys a value immediately after its **last use**, not at the end
-    of the scope.  A `Statement`, a `Transaction` and both COPY handles hold
-    the raw connection handle rather than a reference to the `Connection` --
-    that is what keeps them free of an origin parameter -- so nothing stops
-    the compiler from closing the connection while one of them is still in
-    flight:
-
-    ```mojo
-    var out = conn.copy_out("COPY t TO STDOUT")   # `conn` is used for the
-    var lines = out.rows()                        # last time above: closed!
-    ```
-
-    Calling this at the end of the test is how that is pinned down: passing
-    `conn^` is a use, so the connection lives until this line.  Any later use
-    of `conn` -- `conn.ping()` at the end of a test, say -- does the same job.
-
-    Args:
-        conn: The connection to consume, and thereby close, right here.
-    """
-    _ = conn^
 
 
 # ===----------------------------------------------------------------------===#
@@ -1020,7 +996,6 @@ def test_begin_inside_a_transaction_raises() raises:
     # The outer block is still the one that was open, and it still works.
     var second = conn.begin()
     second.rollback()
-    _keepalive(conn^)  # `conn` must outlive both transactions
 
 
 def test_last_error_sees_statement_and_transaction_failures() raises:
@@ -1062,7 +1037,6 @@ def test_last_error_sees_statement_and_transaction_failures() raises:
         "an error raised through a Transaction was not recorded",
     )
     tx.rollback()
-    _keepalive(conn^)  # `conn` must outlive `stmt` and `tx`
 
 
 # ===----------------------------------------------------------------------===#
@@ -1156,7 +1130,6 @@ def test_copy_round_trips_nulls_tabs_and_backslashes() raises:
     assert_equal(dec.decode_row(lines[2])[0].value(), "a\tb")
     assert_equal(dec.decode_row(lines[3])[0].value(), "back\\slash")
     assert_equal(dec.decode_row(lines[4])[0].value(), "\\N")
-    _keepalive(conn^)  # `conn` must outlive `out`
 
 
 def test_copy_in_and_out_in_csv_format() raises:
@@ -1197,7 +1170,6 @@ def test_copy_in_and_out_in_csv_format() raises:
         Bool(dec.decode_row(lines[2])[0]), "CSV NULL came back a value"
     )
     assert_equal(dec.decode_row(lines[3])[0].value(), "")
-    _keepalive(conn^)  # `conn` must outlive `out`
 
 
 def test_a_malformed_copy_row_raises_22p02_at_finish() raises:
@@ -1314,7 +1286,6 @@ def test_copy_out_matches_the_psql_fixture_format() raises:
     assert_equal(len(split[0]), 3)
     assert_equal(split[1], "", "read_all() ended mid-row")
     assert_equal(split[0][0], lines[0])
-    _keepalive(conn^)  # `conn` must outlive `out` and `whole`
 
 
 def _abandon_a_copy_out(mut conn: Connection) raises:
@@ -1446,6 +1417,158 @@ def test_copy_in_inside_a_transaction_rolls_back_with_it() raises:
     assert_equal(_count(conn, "txcopy"), 3, "the writer cannot see its rows")
     tx.rollback()
     assert_equal(_count(conn, "txcopy"), 0, "the COPY outlived its transaction")
+
+
+# ===----------------------------------------------------------------------===#
+# Who owns the connection
+#
+# A handle keeps the session open: `Statement`, `Transaction`, `CopyIn` and
+# `CopyOut` share ownership of the `PGconn` rather than borrowing it.  That is
+# what makes them safe to use after the `Connection` value has been dropped --
+# which Mojo does at its *last use*, not at the end of the block, so it happens
+# constantly.  Each helper below hands back only the handle; the `Connection`
+# it was made from is destroyed as the helper returns.
+# ===----------------------------------------------------------------------===#
+
+
+def _transaction_from_a_dropped_connection() raises -> Transaction:
+    """Open a transaction and let the `Connection` value die on the way out.
+
+    The ``TEMP`` table is the proof that nothing reconnected behind our back:
+    it belongs to this session and disappears with it, so a transaction that
+    can still see it is on the same `PGconn`.
+
+    Returns:
+        The open transaction, holding the only remaining share of the
+        connection.
+
+    Raises:
+        Error: If the server refused any of it.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE handover (id bigint)")
+    _ = conn.execute("INSERT INTO handover VALUES (1)")
+    return conn.begin()
+
+
+def test_a_transaction_keeps_the_connection_alive() raises:
+    """A `Transaction` outliving its `Connection` value still works."""
+    var tx = _transaction_from_a_dropped_connection()
+    assert_equal(tx.execute("INSERT INTO handover VALUES (2)"), 1)
+    var res = tx.query("SELECT count(*) AS n FROM handover")
+    assert_equal(
+        res.row(0).int64("n"), 2, "the temp table went with the connection"
+    )
+    tx.commit()
+
+
+def _statement_from_a_dropped_connection() raises -> Statement:
+    """Prepare a statement and let the `Connection` value die on the way out.
+
+    Returns:
+        The prepared statement, holding the only remaining share of the
+        connection -- and a prepared statement is session-local, so it can
+        only still run if that session is still up.
+
+    Raises:
+        Error: If the server refused any of it.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE stmt_handover (id bigint)")
+    _ = conn.execute("INSERT INTO stmt_handover VALUES (1), (2), (3)")
+    return conn.prepare(
+        "cnt", "SELECT count(*) AS n FROM stmt_handover WHERE id >= $1"
+    )
+
+
+def test_a_statement_keeps_the_connection_alive() raises:
+    """A `Statement` outliving its `Connection` value still runs."""
+    var stmt = _statement_from_a_dropped_connection()
+    assert_equal(stmt.query(Params().int64(1)).row(0).int64("n"), 3)
+    assert_equal(stmt.query(Params().int64(3)).row(0).int64("n"), 1)
+
+
+def _copy_out_from_a_dropped_connection() raises -> CopyOut:
+    """Start a ``COPY TO STDOUT`` and let the `Connection` value die.
+
+    The case that used to be a use-after-free: a COPY handle is naturally
+    read *after* the last mention of the connection.
+
+    Returns:
+        The open stream, holding the only remaining share of the connection.
+
+    Raises:
+        Error: If the server refused any of it.
+    """
+    var conn = _connect()
+    _ = conn.execute(
+        "CREATE TEMP TABLE copy_handover AS SELECT generate_series(1, 500) AS n"
+    )
+    return conn.copy_out("COPY copy_handover TO STDOUT")
+
+
+def test_a_copy_out_keeps_the_connection_alive() raises:
+    """A `CopyOut` outliving its `Connection` value reads the whole stream."""
+    var out = _copy_out_from_a_dropped_connection()
+    var lines = out.rows()
+    assert_equal(len(lines), 500, "the stream was cut short")
+    assert_equal(lines[0], "1")
+    assert_equal(lines[499], "500")
+
+
+def test_close_invalidates_every_handle_with_08006() raises:
+    """`Connection.close` ends the session now, whoever else is holding it.
+
+    The other half of shared ownership: a handle keeps the connection alive,
+    but it does not keep it *open* against an explicit close.  Every path then
+    reports SQLSTATE ``08006`` instead of touching a freed `PGconn`.
+    """
+    var conn = _connect()
+    _ = conn.execute("CREATE TEMP TABLE closing (id bigint)")
+    _ = conn.execute("INSERT INTO closing VALUES (1), (2)")
+    var stmt = conn.prepare("ins", "INSERT INTO closing VALUES ($1)")
+    var tx = conn.begin()
+    var out = conn.copy_out("COPY closing TO STDOUT")
+
+    conn.close()
+    assert_false(conn.is_open(), "close() left the connection open")
+    conn.close()  # idempotent: the second call is a no-op
+    assert_false(conn.is_open(), "the second close() reopened something")
+
+    var raised_stmt = False
+    try:
+        _ = stmt.execute(Params().int64(3))
+    except e:
+        raised_stmt = True
+        assert_equal(sqlstate_of(e), "08006")
+    assert_true(raised_stmt, "a Statement ran on a closed connection")
+
+    var raised_tx = False
+    try:
+        _ = tx.execute("INSERT INTO closing VALUES (4)")
+    except e:
+        raised_tx = True
+        assert_equal(sqlstate_of(e), "08006")
+    assert_true(raised_tx, "a Transaction ran on a closed connection")
+
+    var raised_commit = False
+    try:
+        tx.commit()
+    except e:
+        raised_commit = True
+        assert_equal(sqlstate_of(e), "08006")
+    assert_true(raised_commit, "a closed transaction committed")
+
+    var chunk = List[UInt8]()
+    var raised_copy = False
+    try:
+        _ = out.next(chunk)
+    except e:
+        raised_copy = True
+        assert_equal(sqlstate_of(e), "08006")
+    assert_true(raised_copy, "a CopyOut read from a closed connection")
+
+    assert_equal(conn.last_error().sqlstate, "08006")
 
 
 def main() raises:

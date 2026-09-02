@@ -1,7 +1,7 @@
 """`postgres.connection` — the connection, its statements and its transactions.
 
-`Connection` owns one libpq `PGconn` and closes it when it goes out of scope.
-Everything a caller does with a database goes through it: `Connection.execute`
+`Connection` is the way in to one libpq `PGconn`.  Everything a caller does
+with a database goes through it: `Connection.execute`
 for commands, `Connection.query` for rows, `Connection.prepare` for a
 server-side statement to run more than once, `Connection.begin` for a
 transaction, and `Connection.copy_in`/`Connection.copy_out` for bulk transfer
@@ -45,8 +45,26 @@ _ = tx.execute("INSERT INTO audit VALUES ($1)", Params().int64(1))
 tx.commit()
 ```
 
+**A handle keeps the session open.**  The `PGconn` is owned jointly by the
+`Connection` and by every `Statement`, `Transaction`, `copy.CopyIn` and
+`copy.CopyOut` made from it, and it is closed when the last of them is
+destroyed.  That matters because Mojo destroys a value after its last *use*,
+not at the end of the block, so this is the ordinary case rather than an
+exotic one:
+
+```mojo
+var out = conn.copy_out("COPY t TO STDOUT")   # the last mention of `conn`,
+for line in out.rows():                       # and the session is still up
+    ...
+```
+
+`Connection.close` is the exception, and it is the point of having it: it ends
+the session immediately, and every handle still holding the connection then
+raises SQLSTATE ``08006`` rather than reaching a freed `PGconn`.
+
 **One connection, one thread.**  libpq's `PGconn` is not safe to use from two
-threads at once, and nothing here adds a lock.
+threads at once, and nothing here adds a lock.  Shared ownership is about
+lifetime, not concurrency.
 
 **Notices go to stderr.**  A ``NOTICE``/``WARNING`` the server raises -- from a
 ``RAISE NOTICE``, or from ``CREATE TABLE IF NOT EXISTS`` finding the table
@@ -318,19 +336,27 @@ def _result_error(
 
 
 # ===----------------------------------------------------------------------===#
-# The shared error cell
+# The shared connection cell
 # ===----------------------------------------------------------------------===#
 
 
-struct _ErrorCell(Movable):
-    """The one slot `Connection.last_error` reads, shared by everything on it.
+struct _ConnCell(Movable):
+    """The `PGconn` itself, and the last error raised on it, shared by all.
 
-    A `Statement`, a `Transaction`, a `CopyIn` and a `CopyOut` all hold the raw
-    `PGconnPtr` rather than a reference to the `Connection` -- which is what
-    keeps them free of an origin parameter -- so none of them can reach back to
-    a field on it.  They share this instead, through an
-    `std.memory.ArcPointer`: every raise anywhere on the connection lands in
-    the same cell, and `Connection.last_error` sees all of them.
+    A `Statement`, a `Transaction`, a `CopyIn` and a `CopyOut` cannot hold a
+    reference to the `Connection` -- that would give every one of them an
+    origin parameter, and infect their return types with it -- so they hold a
+    share of *this* instead, through an `std.memory.ArcPointer`.  Two things
+    follow, and they are the whole point:
+
+    - **The connection lives as long as the handles do.**  The `PGconn` is
+      closed by this cell's destructor, which runs when the last share of it
+      goes away.  Mojo destroys a value after its last *use*, so a
+      `Connection` is routinely dropped while a handle made from it is still
+      working; that is now simply a transfer of ownership, not a dangling
+      pointer.
+    - **Every error lands in one place.**  `Connection.last_error` reads this
+      slot, so it sees what was raised through a `Statement` or a COPY too.
 
     `ArcPointer` gives interior mutability -- writes go through an immutable
     `self` -- which is what lets `Statement.execute` record an error without
@@ -338,40 +364,86 @@ struct _ErrorCell(Movable):
     reason the whole tin is: one `PGconn` belongs to one thread.
     """
 
+    var conn: PGconnPtr
+    """The owned ``PGconn *``; ``0`` once `Connection.close` has run."""
     var error: PostgresError
     """The most recent error raised through this connection, in any form."""
 
-    def __init__(out self):
-        """Start empty: every field of the `PostgresError` is ``""``."""
+    def __init__(out self, conn: PGconnPtr):
+        """Take ownership of an open connection handle.
+
+        Args:
+            conn: The ``PGconn *`` this cell now owns and will finish, or
+                ``0`` for a cell that owns nothing yet.
+        """
+        self.conn = conn
         self.error = PostgresError()
 
+    def __deinit__(deinit self):
+        """Close the connection, if `Connection.close` has not already.
 
-def _record(errors: ArcPointer[_ErrorCell], err: PostgresError):
+        This runs when the last share of the cell is dropped -- which is the
+        last of the `Connection` and every handle made from it, in whatever
+        order they happen to be destroyed.
+        """
+        if self.conn != 0:
+            try:
+                libpq().PQfinish(self.conn)
+            except:
+                pass
+
+
+def _record(cell: ArcPointer[_ConnCell], err: PostgresError):
     """Store `err` as the connection's most recent error.
 
     Args:
-        errors: The connection's shared error cell.
+        cell: The connection's shared cell.
         err: The error to remember.
     """
-    errors[].error = err.copy()
+    cell[].error = err.copy()
 
 
-def _raise_error(errors: ArcPointer[_ErrorCell], err: PostgresError) raises:
+def _raise_error(cell: ArcPointer[_ConnCell], err: PostgresError) raises:
     """Record `err` and raise it.
 
     Args:
-        errors: The connection's shared error cell.
+        cell: The connection's shared cell.
         err: The error to record and raise.
 
     Raises:
         Error: Always -- `err` formatted by `sqlstate.PostgresError.to_error`.
     """
-    _record(errors, err)
+    _record(cell, err)
     raise err.to_error()
 
 
+def _open_conn(cell: ArcPointer[_ConnCell]) raises -> PGconnPtr:
+    """The cell's connection handle, or raise because it has been closed.
+
+    Every call that reaches libpq goes through here, which is what makes
+    `Connection.close` safe to call while a `Statement`, a `Transaction` or a
+    COPY handle is still alive: they find ``0`` and report it, rather than
+    using a freed pointer.
+
+    Args:
+        cell: The connection's shared cell.
+
+    Returns:
+        The live ``PGconn *``.
+
+    Raises:
+        Error: A `sqlstate.PostgresError` with SQLSTATE
+            `sqlstate.CONNECTION_FAILURE` (08006) if the connection has been
+            closed.
+    """
+    var conn = cell[].conn
+    if conn == 0:
+        _raise_error(cell, _closed_error())
+    return conn
+
+
 def _raise_result(
-    errors: ArcPointer[_ErrorCell],
+    cell: ArcPointer[_ConnCell],
     res: PGresultPtr,
     conn: PGconnPtr,
     sql: String,
@@ -384,7 +456,7 @@ def _raise_result(
     apart between them.
 
     Args:
-        errors: The connection's shared error cell.
+        cell: The connection's shared cell.
         res: The failing result handle; ``0`` when libpq produced none.
             Cleared here.
         conn: The connection the command ran on.
@@ -396,7 +468,7 @@ def _raise_result(
     """
     var err = _result_error(res, conn, sql)
     libpq().PQclear(res)
-    _raise_error(errors, err)
+    _raise_error(cell, err)
 
 
 def _closed_error() -> PostgresError:
@@ -414,7 +486,7 @@ def _closed_error() -> PostgresError:
 
 
 def drain_results(
-    conn: PGconnPtr, errors: ArcPointer[_ErrorCell], sql: String
+    conn: PGconnPtr, cell: ArcPointer[_ConnCell], sql: String
 ) raises -> Int:
     """Collect every outstanding result, then report on the first one.
 
@@ -427,7 +499,7 @@ def drain_results(
 
     Args:
         conn: The connection handle.
-        errors: The connection's shared error cell.
+        cell: The connection's shared cell.
         sql: The statement text, attached to any error raised.
 
     Returns:
@@ -460,7 +532,7 @@ def drain_results(
         var n = _affected_rows(first)
         pq.PQclear(first)
         return n
-    _raise_result(errors, first, conn, sql)
+    _raise_result(cell, first, conn, sql)
     return 0  # unreachable: `_raise_result` always raises
 
 
@@ -533,31 +605,19 @@ struct Statement(Movable):
 
     A prepared statement is **session-local**: it lives on the connection it
     was prepared on, until that connection closes or `Statement.deallocate`
-    runs.  This type therefore holds the raw connection handle, not a
-    reference to the `Connection` -- which is what keeps it free of an origin
-    parameter, and means keeping a `Statement` does *not* keep the
-    `Connection` alive.
-
-    The cost of that is a rule the compiler cannot enforce for you:
-
-    **A `Statement` must not outlive its `Connection`, or be used after
-    `Connection.close`.**  The handle it holds is dangling at that point and
-    using it is undefined behaviour, not an error.
-
-    Watch for the case where that happens without anything leaving scope:
-    **Mojo destroys a value after its last use, not at the end of the block**,
-    so a connection whose final mention comes *before* the statement's is
-    closed while the statement is still live.
+    runs.  Holding a `Statement` **keeps that connection open** -- it shares
+    ownership of the `PGconn` rather than borrowing it -- so a statement may
+    safely outlive the `Connection` value it came from, which matters because
+    Mojo destroys a value after its last *use*:
 
     ```mojo
-    var stmt = conn.prepare("s", "SELECT 1")   # the last mention of `conn` --
-    _ = stmt.query()                           # so it is closed by now
+    var stmt = conn.prepare("s", "SELECT 1")   # the last mention of `conn`,
+    var res = stmt.query()                     # and the session is still up
     ```
 
-    Any later use of the connection fixes it -- one is usually there already
-    -- and ``_ = conn^`` after the last use of the statement says so
-    explicitly.  The same applies to `Transaction`, `copy.CopyIn` and
-    `copy.CopyOut`.
+    An explicit `Connection.close` is the exception: it closes the session
+    there and then, and every statement on it raises SQLSTATE ``08006``
+    afterwards.
 
     Example:
 
@@ -569,14 +629,12 @@ struct Statement(Movable):
 
     Note:
         Errors raised through a `Statement` *are* recorded in
-        `Connection.last_error`: the statement holds a share of the same
-        error cell the connection does.
+        `Connection.last_error`: the statement holds a share of the same cell
+        the connection does.
     """
 
-    var _conn: PGconnPtr
-    """The connection the statement lives on; borrowed, never finished here."""
-    var _errors: ArcPointer[_ErrorCell]
-    """The connection's shared error cell; see `_ErrorCell`."""
+    var _cell: ArcPointer[_ConnCell]
+    """The connection this statement lives on, shared; see `_ConnCell`."""
     var _name: String
     """The server-side statement name."""
     var _sql: String
@@ -584,8 +642,7 @@ struct Statement(Movable):
 
     def __init__(
         out self,
-        conn: PGconnPtr,
-        errors: ArcPointer[_ErrorCell],
+        cell: ArcPointer[_ConnCell],
         name: String,
         sql: String,
     ):
@@ -595,13 +652,13 @@ struct Statement(Movable):
         `PQprepare` and checks the status before constructing this.
 
         Args:
-            conn: The connection the statement was prepared on.
-            errors: That connection's shared error cell.
+            cell: The shared cell of the connection it was prepared on; a
+                share of it is kept, so the connection stays open at least as
+                long as this statement does.
             name: The server-side statement name.
             sql: The SQL it was prepared from.
         """
-        self._conn = conn
-        self._errors = errors
+        self._cell = cell
         self._name = name
         self._sql = sql
 
@@ -645,7 +702,8 @@ struct Statement(Movable):
         # small copy per execute, next to a network round trip, buys immunity
         # from that; both toolchains as of 1.0.0 need it.
         var name = self._name.copy()
-        var res = exec_prepared(self._conn, name, bound.values, bound.nulls)
+        var conn = _open_conn(self._cell)
+        var res = exec_prepared(conn, name, bound.values, bound.nulls)
         var status = libpq().PQresultStatus(res)
         if (
             status == PGRES_COMMAND_OK
@@ -655,7 +713,7 @@ struct Statement(Movable):
             var n = _affected_rows(res)
             libpq().PQclear(res)
             return n
-        _raise_result(self._errors, res, self._conn, self._sql.copy())
+        _raise_result(self._cell, res, conn, self._sql.copy())
         return 0  # unreachable: `_raise_result` always raises
 
     def query(self, params: Params = Params()) raises -> Result:
@@ -676,7 +734,8 @@ struct Statement(Movable):
         var name = (
             self._name.copy()
         )  # a copy on purpose; see `Statement.execute`
-        var res = exec_prepared(self._conn, name, bound.values, bound.nulls)
+        var conn = _open_conn(self._cell)
+        var res = exec_prepared(conn, name, bound.values, bound.nulls)
         var status = libpq().PQresultStatus(res)
         if (
             status == PGRES_TUPLES_OK
@@ -684,7 +743,7 @@ struct Statement(Movable):
             or status == PGRES_EMPTY_QUERY
         ):
             return Result(res)
-        _raise_result(self._errors, res, self._conn, self._sql.copy())
+        _raise_result(self._cell, res, conn, self._sql.copy())
         raise Error("unreachable")  # `_raise_result` always raises
 
     def deallocate(mut self) raises:
@@ -700,10 +759,11 @@ struct Statement(Movable):
         """
         ref pq = libpq()
         var sql = "DEALLOCATE " + _quote_ident(self._name)
-        var res = pq.PQexec(self._conn, sql)
+        var conn = _open_conn(self._cell)
+        var res = pq.PQexec(conn, sql)
         var status = pq.PQresultStatus(res)
         if status != PGRES_COMMAND_OK:
-            _raise_result(self._errors, res, self._conn, sql)
+            _raise_result(self._cell, res, conn, sql)
         pq.PQclear(res)
 
 
@@ -720,9 +780,11 @@ struct Connection(Movable):
     it defaults to 10 seconds): without it, a host that silently drops packets
     blocks for the operating system's TCP timeout, which can be minutes.
 
-    The connection is closed when the `Connection` is destroyed, or earlier by
-    `Connection.close`.  Not copyable -- two owners would mean two
-    `PQfinish`es.
+    The connection is closed when the last thing holding it is destroyed --
+    the `Connection` and every `Statement`, `Transaction`, `copy.CopyIn` and
+    `copy.CopyOut` made from it share ownership of the `PGconn` -- or at once
+    by `Connection.close`, which invalidates all of them.  Not copyable: a
+    second `Connection` on one session is what a handle is for.
 
     Example:
 
@@ -733,14 +795,13 @@ struct Connection(Movable):
     ```
     """
 
-    var _conn: PGconnPtr
-    """The owned ``PGconn *``; ``0`` once closed."""
-    var _errors: ArcPointer[_ErrorCell]
-    """The most recent error raised anywhere on this connection.
+    var _cell: ArcPointer[_ConnCell]
+    """The `PGconn` and the last error raised on it.
 
     Shared with every `Statement`, `Transaction`, `copy.CopyIn` and
-    `copy.CopyOut` made from it, so `Connection.last_error` reports all of
-    them; see `_ErrorCell`."""
+    `copy.CopyOut` made from this connection: they keep the session open for
+    as long as they live, and their errors land where
+    `Connection.last_error` reads.  See `_ConnCell`."""
 
     def __init__(out self, conninfo: String) raises:
         """Connect using a libpq conninfo string or URI.
@@ -759,8 +820,7 @@ struct Connection(Movable):
                 connection could not be established, carrying libpq's own
                 explanation.
         """
-        self._conn = 0
-        self._errors = ArcPointer(_ErrorCell())
+        self._cell = ArcPointer(_ConnCell(0))
 
         ref pq = libpq()
         var conn = pq.PQconnectdb(conninfo)
@@ -768,17 +828,18 @@ struct Connection(Movable):
             var message = _trim(pq.PQerrorMessage(conn))
             if message.byte_length() == 0:
                 message = String("could not establish the connection")
-            # A failed connection still allocates: finish it or leak it.
+            # A failed connection still allocates: finish it or leak it.  The
+            # cell still holds 0, so it will not finish it a second time.
             pq.PQfinish(conn)
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="FATAL",
                     sqlstate=String(SQLCLIENT_UNABLE_TO_ESTABLISH),
                     message=message,
                 ),
             )
-        self._conn = conn
+        self._cell[].conn = conn
 
     def __init__(out self, config: ConnectionConfig) raises:
         """Connect using a typed `config.ConnectionConfig`.
@@ -794,41 +855,48 @@ struct Connection(Movable):
         self = Self(config.to_conninfo())
 
     def __deinit__(deinit self):
-        """Close the connection if it is still open."""
-        if self._conn != 0:
-            try:
-                libpq().PQfinish(self._conn)
-            except:
-                pass
+        """Drop this share of the connection.
+
+        The `PGconn` itself is closed by `_ConnCell`, when the last share of
+        it goes -- which is this one unless a `Statement`, a `Transaction` or
+        a COPY handle made from it is still alive, in which case the session
+        stays up for them.  `Connection.close` is how to end it now.
+        """
+        pass
 
     # -- lifecycle -----------------------------------------------------------
 
     def close(mut self):
-        """Close the connection now.  Idempotent.
+        """Close the connection now, whatever else is still holding it.
+        Idempotent.
 
         Every `Result` already handed out stays valid -- their rows were
-        copied out of libpq's memory -- but any `Statement` prepared on this
-        connection is gone with the session.
+        copied out of libpq's memory.  Everything that reaches the *server*
+        does not: a `Statement`, `Transaction`, `copy.CopyIn` or
+        `copy.CopyOut` made from this connection raises SQLSTATE ``08006``
+        from here on, rather than touching a freed handle.
         """
-        if self._conn != 0:
+        var conn = self._cell[].conn
+        if conn != 0:
+            self._cell[].conn = 0
             try:
-                libpq().PQfinish(self._conn)
+                libpq().PQfinish(conn)
             except:
                 pass
-            self._conn = 0
 
     def is_open(self) -> Bool:
         """Whether the connection is open and usable.
 
         Returns:
-            True while `PQstatus` reports `_ffi.CONNECTION_OK`.  It goes false
-            only on a *fatal* error -- a rejected query leaves the connection
-            perfectly usable.
+            True while `PQstatus` reports `_ffi.CONNECTION_OK`; False once
+            `Connection.close` has run.  It goes false only on a *fatal*
+            error -- a rejected query leaves the connection perfectly usable.
         """
-        if self._conn == 0:
+        var conn = self._cell[].conn
+        if conn == 0:
             return False
         try:
-            return libpq().PQstatus(self._conn) == CONNECTION_OK
+            return libpq().PQstatus(conn) == CONNECTION_OK
         except:
             return False
 
@@ -860,9 +928,10 @@ struct Connection(Movable):
         Raises:
             Error: Only if libpq itself could not be reached.
         """
-        if self._conn == 0:
+        var conn = self._cell[].conn
+        if conn == 0:
             return 0
-        return libpq().PQserverVersion(self._conn)
+        return libpq().PQserverVersion(conn)
 
     def transaction_status(self) raises -> Int:
         """Whether a transaction block is open on this connection.
@@ -876,7 +945,7 @@ struct Connection(Movable):
         Raises:
             Error: Only if libpq itself could not be reached.
         """
-        return libpq().PQtransactionStatus(self._conn)
+        return libpq().PQtransactionStatus(self._cell[].conn)
 
     def last_error(self) -> PostgresError:
         """The most recent error raised through this connection.
@@ -898,14 +967,13 @@ struct Connection(Movable):
             raised through a `Statement`, a `Transaction` or a COPY handle
             made from this connection are recorded here too.
         """
-        return self._errors[].error.copy()
+        return self._cell[].error.copy()
 
     # -- internals -----------------------------------------------------------
 
     def _check_open(self) raises:
         """Raise unless the connection is open."""
-        if self._conn == 0:
-            _raise_error(self._errors, _closed_error())
+        _ = _open_conn(self._cell)
 
     def _raise(mut self, res: PGresultPtr, sql: String) raises:
         """Record and raise the error behind a failed command, clearing `res`.
@@ -919,7 +987,7 @@ struct Connection(Movable):
             Error: Always -- a `sqlstate.PostgresError` formatted through
                 `sqlstate.PostgresError.to_error`.
         """
-        _raise_result(self._errors, res, self._conn, sql)
+        _raise_result(self._cell, res, self._cell[].conn, sql)
 
     def _run(mut self, sql: String, params: Params) raises -> PGresultPtr:
         """Send one command, parameterised or not, and hand back the result.
@@ -936,13 +1004,11 @@ struct Connection(Movable):
             Error: If the connection is closed, or the parameter lists are
                 malformed.
         """
-        self._check_open()
+        var conn = _open_conn(self._cell)
         if len(params) == 0:
-            return libpq().PQexec(self._conn, sql)
+            return libpq().PQexec(conn, sql)
         var bound = _bind(params)
-        return exec_params(
-            self._conn, sql, bound.values, bound.nulls, bound.oids
-        )
+        return exec_params(conn, sql, bound.values, bound.nulls, bound.oids)
 
     # -- commands ------------------------------------------------------------
 
@@ -1047,13 +1113,13 @@ struct Connection(Movable):
             Error: A `sqlstate.PostgresError` if the statement did not parse
                 or the name is already taken.
         """
-        self._check_open()
+        var conn = _open_conn(self._cell)
         ref pq = libpq()
-        var res = pq.PQprepare(self._conn, name, sql, List[UInt32]())
+        var res = pq.PQprepare(conn, name, sql, List[UInt32]())
         if pq.PQresultStatus(res) != PGRES_COMMAND_OK:
             self._raise(res, sql)
         pq.PQclear(res)
-        return Statement(self._conn, self._errors, name, sql)
+        return Statement(self._cell, name, sql)
 
     def execute_prepared(
         mut self, name: String, params: Params = Params()
@@ -1076,9 +1142,9 @@ struct Connection(Movable):
                 such statement is prepared (SQLSTATE ``26000``), or the server
                 rejected the command.
         """
-        self._check_open()
+        var conn = _open_conn(self._cell)
         var bound = _bind(params)
-        var res = exec_prepared(self._conn, name, bound.values, bound.nulls)
+        var res = exec_prepared(conn, name, bound.values, bound.nulls)
         var status = libpq().PQresultStatus(res)
         if (
             status == PGRES_COMMAND_OK
@@ -1108,9 +1174,9 @@ struct Connection(Movable):
                 such statement is prepared, or the server rejected the
                 command.
         """
-        self._check_open()
+        var conn = _open_conn(self._cell)
         var bound = _bind(params)
-        var res = exec_prepared(self._conn, name, bound.values, bound.nulls)
+        var res = exec_prepared(conn, name, bound.values, bound.nulls)
         var status = libpq().PQresultStatus(res)
         if (
             status == PGRES_TUPLES_OK
@@ -1145,13 +1211,13 @@ struct Connection(Movable):
                 ending the first one's block; raising is the only way to keep
                 the guard's promise.
         """
-        self._check_open()
-        var status = libpq().PQtransactionStatus(self._conn)
+        var conn = _open_conn(self._cell)
+        var status = libpq().PQtransactionStatus(conn)
         if status == PQTRANS_UNKNOWN:
-            _raise_error(self._errors, _closed_error())
+            _raise_error(self._cell, _closed_error())
         if status != PQTRANS_IDLE:
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="ERROR",
                     sqlstate=String(ACTIVE_SQL_TRANSACTION),
@@ -1163,7 +1229,7 @@ struct Connection(Movable):
                     sql="BEGIN",
                 ),
             )
-        return Transaction(self._conn, self._errors)
+        return Transaction(self._cell)
 
     # -- COPY ----------------------------------------------------------------
 
@@ -1191,13 +1257,13 @@ struct Connection(Movable):
                 or -- SQLSTATE ``42809`` -- the statement was valid but did
                 not start a ``COPY ... FROM STDIN``.
         """
-        self._check_open()
-        var res = libpq().PQexec(self._conn, sql)
+        var conn = _open_conn(self._cell)
+        var res = libpq().PQexec(conn, sql)
         var status = libpq().PQresultStatus(res)
         if status != PGRES_COPY_IN:
             self._copy_mismatch(res, status, sql, "FROM STDIN")
         libpq().PQclear(res)
-        return CopyIn(self._conn, self._errors, sql)
+        return CopyIn(self._cell, sql)
 
     def copy_out(mut self, sql: String) raises -> CopyOut:
         """Start a ``COPY ... TO STDOUT`` and return the handle to read from.
@@ -1214,13 +1280,13 @@ struct Connection(Movable):
                 server rejected the statement, or -- SQLSTATE ``42809`` -- the
                 statement did not start a ``COPY ... TO STDOUT``.
         """
-        self._check_open()
-        var res = libpq().PQexec(self._conn, sql)
+        var conn = _open_conn(self._cell)
+        var res = libpq().PQexec(conn, sql)
         var status = libpq().PQresultStatus(res)
         if status != PGRES_COPY_OUT:
             self._copy_mismatch(res, status, sql, "TO STDOUT")
         libpq().PQclear(res)
-        return CopyOut(self._conn, self._errors, sql)
+        return CopyOut(self._cell, sql)
 
     def _copy_mismatch(
         mut self, res: PGresultPtr, status: Int, sql: String, wanted: String
@@ -1250,9 +1316,9 @@ struct Connection(Movable):
             # It ran -- it is simply not the COPY that was asked for.  It may
             # even be a COPY in the other direction, which is holding the
             # connection: end it before raising, or every later command fails.
-            discard_copy_quietly(self._conn, status)
+            discard_copy_quietly(self._cell[].conn, status)
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="ERROR",
                     sqlstate=String(WRONG_OBJECT_TYPE),
@@ -1314,39 +1380,34 @@ struct Transaction(Movable):
     failed statement with `Transaction.savepoint` and
     `Transaction.rollback_to`.
 
-    Like `Statement`, this holds the raw connection handle rather than a
-    reference to the `Connection`, so the same rule applies:
-
-    **A `Transaction` must not outlive its `Connection`, or be used after
-    `Connection.close`.**  Mind in particular that Mojo destroys a value after
-    its *last use*, not at the end of the block -- see `Statement`, which
-    documents that hazard and the ``_ = conn^`` that settles it.
+    Like `Statement`, this shares ownership of the connection rather than
+    borrowing it: the session stays open for as long as the transaction does,
+    so a `Transaction` may outlive the `Connection` value it came from -- and
+    it routinely does, since Mojo destroys a value after its last *use*.  An
+    explicit `Connection.close` is the exception, and ends the block: every
+    call on the transaction then raises SQLSTATE ``08006``.
     """
 
-    var _conn: PGconnPtr
-    """The connection the block is open on; borrowed, never finished here."""
-    var _errors: ArcPointer[_ErrorCell]
-    """The connection's shared error cell; see `_ErrorCell`."""
+    var _cell: ArcPointer[_ConnCell]
+    """The connection the block is open on, shared; see `_ConnCell`."""
     var _done: Bool
     """True once committed or rolled back; silences the destructor."""
 
-    def __init__(
-        out self, conn: PGconnPtr, errors: ArcPointer[_ErrorCell]
-    ) raises:
-        """Issue ``BEGIN`` on `conn`.
+    def __init__(out self, cell: ArcPointer[_ConnCell]) raises:
+        """Issue ``BEGIN`` on the cell's connection.
 
         `Connection.begin` is the only intended caller: it checks that the
         connection is open and that no block is open already.
 
         Args:
-            conn: The connection to open a transaction on.
-            errors: That connection's shared error cell.
+            cell: The shared cell of the connection to open a transaction on;
+                a share of it is kept, so the connection stays open at least
+                as long as this transaction does.
 
         Raises:
             Error: A `sqlstate.PostgresError` if ``BEGIN`` failed.
         """
-        self._conn = conn
-        self._errors = errors
+        self._cell = cell
         self._done = False
         _ = self._command("BEGIN")
 
@@ -1356,13 +1417,13 @@ struct Transaction(Movable):
         Unconditional: a ``ROLLBACK`` is accepted in every transaction state,
         including the failed one where nothing else is, and it is the only
         statement that leaves the connection idle again.  Errors are swallowed
-        -- a destructor has nobody to raise to, and a connection that has died
-        has already lost the transaction.
+        -- a destructor has nobody to raise to -- and a connection that has
+        been closed has already lost the transaction, so nothing is sent.
         """
-        if not self._done:
+        if not self._done and self._cell[].conn != 0:
             try:
                 ref pq = libpq()
-                var res = pq.PQexec(self._conn, "ROLLBACK")
+                var res = pq.PQexec(self._cell[].conn, "ROLLBACK")
                 pq.PQclear(res)
             except:
                 pass
@@ -1397,7 +1458,7 @@ struct Transaction(Movable):
         """Raise unless the block is still open."""
         if self._done:
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="ERROR",
                     sqlstate=String(NO_ACTIVE_SQL_TRANSACTION),
@@ -1421,7 +1482,8 @@ struct Transaction(Movable):
             Error: A `sqlstate.PostgresError` if the server rejected it.
         """
         ref pq = libpq()
-        var res = pq.PQexec(self._conn, sql)
+        var conn = _open_conn(self._cell)
+        var res = pq.PQexec(conn, sql)
         var status = pq.PQresultStatus(res)
         if (
             status == PGRES_COMMAND_OK
@@ -1431,7 +1493,7 @@ struct Transaction(Movable):
             var n = _affected_rows(res)
             pq.PQclear(res)
             return n
-        _raise_result(self._errors, res, self._conn, sql)
+        _raise_result(self._cell, res, conn, sql)
         return 0  # unreachable: `_raise_result` always raises
 
     # -- commands ------------------------------------------------------------
@@ -1468,7 +1530,7 @@ struct Transaction(Movable):
             var n = _affected_rows(res)
             libpq().PQclear(res)
             return n
-        _raise_result(self._errors, res, self._conn, sql)
+        _raise_result(self._cell, res, self._cell[].conn, sql)
         return 0  # unreachable: `_raise_result` always raises
 
     def query(
@@ -1498,7 +1560,7 @@ struct Transaction(Movable):
             or status == PGRES_EMPTY_QUERY
         ):
             return Result(res)
-        _raise_result(self._errors, res, self._conn, sql)
+        _raise_result(self._cell, res, self._cell[].conn, sql)
         raise Error("unreachable")  # `_raise_result` always raises
 
     def _run(self, sql: String, params: Params) raises -> PGresultPtr:
@@ -1515,12 +1577,11 @@ struct Transaction(Movable):
         Raises:
             Error: If the parameter lists are malformed.
         """
+        var conn = _open_conn(self._cell)
         if len(params) == 0:
-            return libpq().PQexec(self._conn, sql)
+            return libpq().PQexec(conn, sql)
         var bound = _bind(params)
-        return exec_params(
-            self._conn, sql, bound.values, bound.nulls, bound.oids
-        )
+        return exec_params(conn, sql, bound.values, bound.nulls, bound.oids)
 
     # -- savepoints ----------------------------------------------------------
 
@@ -1601,7 +1662,10 @@ struct Transaction(Movable):
                 outcome is *reported* rather than hidden.
         """
         self._check_active()
-        if libpq().PQtransactionStatus(self._conn) == PQTRANS_INERROR:
+        if (
+            libpq().PQtransactionStatus(_open_conn(self._cell))
+            == PQTRANS_INERROR
+        ):
             # The block is dead either way; end it cleanly, then say so.
             try:
                 _ = self._command("ROLLBACK")
@@ -1609,7 +1673,7 @@ struct Transaction(Movable):
                 pass
             self._done = True
             _raise_error(
-                self._errors,
+                self._cell,
                 PostgresError(
                     severity="ERROR",
                     sqlstate=String(IN_FAILED_SQL_TRANSACTION),
