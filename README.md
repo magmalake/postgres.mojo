@@ -51,8 +51,8 @@ links OpenSSL, so `sslmode=require` works without anything else installed.
 Under construction — see the milestones in
 [magmalake.org/issues/1](https://magmalake.org/issues/1):
 
-- [ ] **M1** connect and query: `Connection`, text results by index and name, errors with SQLSTATE
-- [ ] **M2** parameters and statements: `PQexecParams`, prepared statements, the `Params` builder, the full type table
+- [x] **M1** connect and query: `Connection`, text results by index and name, errors with SQLSTATE
+- [x] **M2** parameters and statements: `PQexecParams`, prepared statements, the `Params` builder, the full type table
 - [ ] **M3** transactions and `COPY`
 - [ ] **M4** a Postgres-backed Iceberg catalog, in [iceberg.mojo](https://github.com/magmalake/iceberg.mojo)
 
