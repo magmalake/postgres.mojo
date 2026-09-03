@@ -1,57 +1,46 @@
-"""Minimal query example: connect, ask the server about itself, print a table.
-
-Point it at any PostgreSQL. The quickest one to hand is the throwaway cluster
-the tests use:
-
-    sh scripts/with-pg-server.sh sh -c \
-        'mojo run -I src examples/query_basic.mojo'
-
-which exports `$POSTGRES_TEST_DSN` for the run. Otherwise set that variable
-yourself, or edit the `ConnectionConfig` below:
+"""Connect, run a query, read typed rows -- including a NULL one.
 
     export POSTGRES_TEST_DSN=postgresql://postgres@localhost:5432/postgres
     mojo run -I src examples/query_basic.mojo
+
+or, against the throwaway test cluster:
+
+    sh scripts/with-pg-server.sh sh -c 'mojo run -I src examples/query_basic.mojo'
 """
 
 from std.os import getenv
 
-from postgres import Connection, ConnectionConfig
+from postgres import Connection, Params
 
 
 def main() raises:
-    var dsn = getenv("POSTGRES_TEST_DSN", "")
-    var conn: Connection
-    if dsn:
-        conn = Connection(dsn)
-    else:
-        conn = Connection(
-            ConnectionConfig(
-                host="localhost",
-                port=5432,
-                dbname="postgres",
-                user="postgres",
-                password="postgres",
-                connect_timeout=5,
-            )
-        )
+    var dsn = getenv("POSTGRES_TEST_DSN", "postgresql://localhost/postgres")
+    var conn = Connection(dsn)
 
-    print("server version:", conn.server_version())
-
-    var res = conn.query(
-        "SELECT current_database() AS db, current_user AS who, version() AS v"
+    _ = conn.execute("DROP TABLE IF EXISTS qb_people")
+    _ = conn.execute(
+        "CREATE TABLE qb_people (id bigint primary key, name text, note text)"
+    )
+    _ = conn.execute(
+        "INSERT INTO qb_people VALUES ($1, $2, $3), ($4, $5, $6)",
+        Params()
+        .int64(1)
+        .text("Ada")
+        .text("first")
+        .int64(2)
+        .text("Grace")
+        .null(),
     )
 
-    var header = String("")
-    for col in range(res.num_cols()):
-        if col > 0:
-            header += " | "
-        header += res.column_name(col)
-    print(header)
-
+    # By column name...
+    var res = conn.query("SELECT id, name, note FROM qb_people ORDER BY id")
     for row in res:
-        var line = String("")
-        for col in range(row.num_cols()):
-            if col > 0:
-                line += " | "
-            line += row.text(col)
-        print(line)
+        var note = "NULL" if row.is_null("note") else row.text("note")
+        print(row.int64("id"), row.text("name"), note)
+
+    # ... and by 0-based index, which works the same on a `Row` obtained
+    # either way -- both ways resolve through the same column metadata.
+    var first = res.row(0)
+    print("by index:", first.int64(0), first.text(1))
+
+    _ = conn.execute("DROP TABLE qb_people")

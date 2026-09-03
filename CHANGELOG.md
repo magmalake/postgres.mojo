@@ -7,26 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Forked into [magmalake/postgres.mojo](https://github.com/magmalake/postgres.mojo)
-and rewritten for the Mojo 1.x toolchain (stable 1.0.0 + nightly); published to
-[mojoshelf](https://mojoshelf.org/tins/postgres-mojo) as `postgres-mojo` 0.2.0.
+### Added
+- `Connection`, `Statement`, `Transaction`, `CopyIn`/`CopyOut`, `Result`/`Row`,
+  `Params` and `ConnectionConfig` -- connect, parameterized `query`/`execute`,
+  named prepared statements, transactions with savepoints and rollback on
+  drop, and `COPY` in both directions and both sub-formats (text and CSV)
+  (#4, #5, #6).
+- The full §5 type table: typed `Row` accessors and `Params` builders for
+  `bool`, `int2`/`int4`/`int8`, `float4`/`float8` (including
+  `NaN`/`Infinity`/`-Infinity`), `numeric` (kept a `String` -- see
+  [README](README.md#the-type-table)), `text`/`varchar`/`bpchar`, `bytea`,
+  `date`/`time`/`timestamp`/`timestamptz` (epoch-relative integers,
+  `timestamptz` normalized to UTC), `uuid`, and `json`/`jsonb`.
+- Every server error raised with its SQLSTATE (`PostgresError`, `sqlstate_of`,
+  the code constants and predicates like `is_unique_violation`), plus
+  `Connection.last_error()` for the structured form.
+- `postgres.copyfmt` -- the COPY text/CSV row codec (`CopyEncoder`,
+  `CopyDecoder`, `decode_row`, `split_rows`), independent of libpq and usable
+  without a server.
+- A live test suite (149 unit tests, 42 server tests) against a throwaway
+  PostgreSQL cluster started from the conda `postgresql` package, a benchmark
+  suite (`bench/bench_postgres.mojo`), and a cell-exact psql/psycopg
+  cross-check in both directions (`tests/crosscheck.sh`).
 
 ### Changed
+- Forked into [magmalake/postgres.mojo](https://github.com/magmalake/postgres.mojo)
+  and rewritten for the Mojo 1.x toolchain (stable 1.0.0 + nightly); published
+  to [mojoshelf](https://mojoshelf.org/tins/postgres-mojo) as `postgres-mojo`.
 - libpq is `dlopen`ed once per process from `$CONDA_PREFIX` (`OwnedDLHandle`
   with `RTLD_NODELETE`) instead of resolved through `external_call`.
-- `Connection.query` / `execute` take a `Params` builder and go through
-  `PQexecParams`; `PQescapeLiteral` is gone (#4).
-- Errors carry the SQLSTATE (#5).
-
-### Added
-- Named prepared statements, transactions with savepoints, `COPY` in and out (#6).
-- Typed result access per column OID; NULL distinct from empty.
-- Tests against a real server started from the conda `postgresql` package, and
-  a cell-exact cross-check against `psql` and `psycopg`.
+- `Connection.query`/`execute` take a `Params` builder and go through
+  `PQexecParams`, so values are sent out of band rather than escaped into the
+  SQL text -- there is nothing to escape and no injection surface.
+- **Ownership rule**: a `Statement`, `Transaction`, `CopyIn` and `CopyOut`
+  co-own the connection through a shared, refcounted cell rather than
+  borrowing the `Connection` -- the session stays open for as long as any of
+  them lives, even after the `Connection` value that made them has gone out
+  of scope. `Connection.close()` is the exception: it invalidates all of them
+  at once, and every later call on one raises SQLSTATE `08006`.
 
 ### Removed
+- The `PQescapeLiteral`-based API: values are no longer escaped into SQL
+  text; every parameter now goes out through `PQexecParams`/`PQexecPrepared`
+  (#4).
 - `ml_pipeline.mojo` example, `docs/ARCHITECTURE.md`, and the upstream
   repository-hygiene files (CODEOWNERS, FUNDING, Dependabot, CodeQL, SECURITY).
+
+### Compatibility
+
+PostgreSQL 16-18 servers, conda-forge `libpq` 16-18, Mojo 1.0.0 and nightly.
 
 ## [0.1.0] — 2026-05-12
 

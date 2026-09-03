@@ -37,6 +37,9 @@ unit = "sh tests/run_unit.sh"
 # and stops it again on exit.
 server = "sh tests/run_tests.sh"
 test = { depends-on = ["unit", "server"] }
+# Runs every examples/*.mojo file against a throwaway server; a failing
+# example aborts the run.
+examples = "sh scripts/with-pg-server.sh sh tests/run_examples.sh"
 
 format = "mojo format src tests examples bench"
 # `mojo format` has no check mode in 1.0.0, so the check is: format, then
@@ -78,9 +81,11 @@ backend = { name = "pixi-build-mojo", version = "0.*" }
 path = "src/postgres"
 name = "postgres"
 
+# libpq is dlopened at run time, never linked, so it is a run dependency only:
+# as a host dependency its run_exports would pin consumers to the minor
+# version the package happened to be built against.
 [package.host-dependencies]
 mojo-compiler = "==1.0.0"
-libpq = ">=16,<19"
 
 [package.build-dependencies]
 mojo-compiler = "==1.0.0"
