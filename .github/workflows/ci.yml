@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: prefix-dev/setup-pixi@v0.9.0
+      - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           # Pinned: the committed lock file is written by 0.78.0, and an
           # unpinned pixi rejects it as not up-to-date with the workspace.
