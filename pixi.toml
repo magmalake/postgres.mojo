@@ -26,6 +26,10 @@ postgresql = ">=16,<19"
 # back with it, and rows it writes are read back here, cell for cell.
 python = ">=3.11"
 psycopg = ">=3.2"
+# Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
+# source dependency pinned at the revision mojoshelf published, and builds
+# the `mojolint` executable into every environment next to mojo-lsp-server.
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "2a12807b7847984aff2c8bf148b0eb7515a99844" }
 
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
@@ -40,6 +44,14 @@ test = { depends-on = ["unit", "server"] }
 # Runs every examples/*.mojo file against a throwaway server; a failing
 # example aborts the run.
 examples = "sh scripts/with-pg-server.sh sh tests/run_examples.sh"
+
+# mojolint (lint-mojo, below): the origin and threading mistakes the compiler
+# lets through, with mojo-lsp-server behind the rules. Exit 1 on findings.
+# bench/ is left out: bench/bench_postgres.mojo imports `bench` from the
+# bench-mojo tin, which lives only in the separate `bench` feature/environment
+# — and that environment has no mojo-lsp-server, so `--lsp` mode can't resolve
+# it from `default` or `stable` either way.
+lint = { cmd = "mojolint --lsp -I src src tests examples" }
 
 format = "mojo format src tests examples bench"
 # `mojo format` has no check mode in 1.0.0, so the check is: format, then

@@ -32,3 +32,6 @@ jobs:
       # psql/psycopg cross-check against it, and stops it on exit.
       - name: Tests
         run: pixi run -e ${{ matrix.env }} test
+
+      - name: Lint (mojolint --lsp)
+        run: pixi run -e ${{ matrix.env }} lint
