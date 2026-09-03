@@ -700,7 +700,9 @@ struct Statement(Movable):
         # which is what `vectorize` and the benchmark harness take) -- libpq
         # is handed a garbage length and the process aborts in `alloc`.  One
         # small copy per execute, next to a network round trip, buys immunity
-        # from that; both toolchains as of 1.0.0 need it.
+        # from that on 1.0.0.  Upstream: modular/modular#7070.  The nightly
+        # (1.1.0.dev2026090205) corrupts the value before the copy is made,
+        # so there the workaround does not hold; see CHANGELOG.
         var name = self._name.copy()
         var conn = _open_conn(self._cell)
         var res = exec_prepared(conn, name, bound.values, bound.nulls)

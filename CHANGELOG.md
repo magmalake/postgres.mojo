@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-02
+
 ### Added
 - `Connection`, `Statement`, `Transaction`, `CopyIn`/`CopyOut`, `Result`/`Row`,
   `Params` and `ConnectionConfig` -- connect, parameterized `query`/`execute`,
@@ -57,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 PostgreSQL 16-18 servers, conda-forge `libpq` 16-18, Mojo 1.0.0 and nightly.
 
+### Known limitations
+- Toolchain: a `String` captured by a parametric closure (`@parameter def`
+  passed as a `def[f: def() capturing raises -> None]()` parameter -- the
+  shape `vectorize` and the bench harness take) is read with a corrupt length
+  at `-O1` and above ([modular/modular#7070](https://github.com/modular/modular/issues/7070)).
+  `Statement.execute`/`query` copy the statement name before handing it to
+  libpq, which is enough on Mojo 1.0.0. On the 1.1.0 nightly the captured
+  value is already corrupt when the copy is made, so a `Statement` captured by
+  such a closure can still abort there -- take the `Statement` as a closure
+  *argument*, or call it outside the closure, until the fix lands.
+
 ## [0.1.0] — 2026-05-12
 
 Initial public alpha.
@@ -75,5 +88,6 @@ Initial public alpha.
 - No `COPY` streaming (#6).
 - No connection pooling (#3).
 
-[Unreleased]: https://github.com/magmalake/postgres.mojo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/magmalake/postgres.mojo/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/magmalake/postgres.mojo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dvirarad/mojo-postgres/releases/tag/v0.1.0
