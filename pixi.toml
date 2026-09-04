@@ -72,7 +72,7 @@ mojo-compiler = "==1.0.0"
 bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "4f4440fa6e61c9ca7c7573ca6aa2f8f1d606d88a" }
 
 [feature.bench.tasks]
-bench = "sh scripts/with-pg-server.sh mojo run -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo"
+bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo -o build/bench-postgres && sh scripts/with-pg-server.sh ./build/bench-postgres"
 
 [environments]
 default = ["nightly"]
