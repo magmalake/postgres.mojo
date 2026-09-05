@@ -129,6 +129,17 @@ thread's context.  Every `PoolRef` and every outstanding `Lease` holds a share
 of the pool's state, so the state cannot be destroyed underneath a thread that
 is still using it.
 
+**A lease may outlive the pool value**, and routinely does: Mojo destroys a
+value at its last *use*, so a `ConnectionPool` whose final mention is
+`pool.lease()` is gone before the lease it produced, leaving that lease
+holding the last share.  Returning the connection then means returning it to a
+pool nobody else can see, which is fine and is what the share is for -- but it
+also means the pool's mutex is destroyed by the lease that is using it, so
+every critical section in this module lives in a function that takes the state
+as a *borrowed* argument.  A borrowed argument cannot be destroyed during the
+call, which is what keeps the mutex alive across its own unlock; see
+`_put_back`.
+
 `ConnectionPool.__init__` checks `PQisthreadsafe` and refuses to build a pool
 on a libpq that was compiled without thread safety, because nothing here --
 or anywhere else -- is safe on one.
@@ -543,6 +554,16 @@ def _lock(state: ArcPointer[_PoolState]) -> MutexRef:
         scope guard: Mojo destroys a value at its last *use*, so a guard whose
         destructor unlocks would release the mutex at the first line of the
         critical section rather than the last.  Call `MutexRef.unlock`.
+
+    Note:
+        **Every critical section must be a function that takes `state`
+        borrowed**, as this one does, and every one of them here is.  The view
+        returned points into the state's heap block, so if the caller happened
+        to hold the last share of the state and that share reached *its* last
+        use partway through the critical section, the state -- mutex included
+        -- would be freed before the unlock.  A borrowed argument cannot be
+        destroyed during the call, which is what rules that out; see
+        `_put_back`, where it actually bit.
     """
     var view = MutexRef.at(state[].mutex.address())
     view.lock()
@@ -593,7 +614,14 @@ def _open_one(state: ArcPointer[_PoolState]) raises -> Connection:
         Error: A `sqlstate.PostgresError` with SQLSTATE 08001 if it could not
             be established.
     """
-    return Connection(state[].conninfo.copy())
+    var n = state[].conninfo.byte_length()
+    if n < 8 or n > 500:
+        raise Error("DEBUG: conninfo byte_length is ", n, " -- corrupt")
+    var ci = state[].conninfo.copy()
+    var m = ci.byte_length()
+    if m != n:
+        raise Error("DEBUG: copy length ", m, " != source ", n)
+    return Connection(ci^)
 
 
 def _expired(state: ArcPointer[_PoolState], entry: _Pooled, now: Int) -> Bool:
@@ -641,20 +669,76 @@ def _clean_for_reuse(mut conn: Connection, on_return: Int) -> Bool:
         return False
 
 
-def _release_slot(state: ArcPointer[_PoolState], discarded: Bool):
+def _release_slot(
+    state: ArcPointer[_PoolState], discarded: Bool, escaped: Bool = False
+):
     """Give a busy slot back without a connection in it, and wake a waiter.
 
     Args:
-        state: The pool's shared state.
+        state: The pool's shared state.  Borrowed, which is load-bearing --
+            see `_put_back`.
         discarded: Whether a connection was destroyed to get here, for
             `PoolStats.discarded`.
+        escaped: Whether it was destroyed because something outlived the
+            lease, for `PoolStats.escaped`.
     """
     var view = _lock(state)
     state[].busy -= 1
     if discarded:
         state[].discarded += 1
+    if escaped:
+        state[].escaped += 1
     state[].cond.signal()
     view.unlock()
+
+
+def _put_back(
+    state: ArcPointer[_PoolState],
+    var conn: Connection,
+    opened_at_ms: Int,
+    now: Int,
+    reusable: Bool,
+):
+    """Put `conn` back in the pool, or close it, and release its busy slot.
+
+    **`state` is borrowed on purpose, and the whole critical section lives in
+    this function for that reason.**  A `Lease` may hold the *last* share of
+    the pool's state -- Mojo destroys a value at its last use, so a
+    `ConnectionPool` whose final mention is `pool.lease()` is gone before the
+    lease it produced.  Written inline in `Lease.__deinit__`, the owning share
+    would then also be at *its* last use partway through the critical section,
+    and the state -- with its `pthread_mutex_t` -- would be destroyed and
+    freed before the matching unlock, which would then write into freed heap.
+    That is a use-after-free that corrupts quietly and only surfaces in a
+    later, unrelated allocation.
+
+    A borrowed argument cannot be destroyed for the duration of the call, so
+    the mutex is guaranteed to outlive its own unlock.  This is the same
+    guarantee `threads.parallel_for`'s typed form leans on, for the same
+    reason.
+
+    Args:
+        state: The pool's shared state, borrowed.
+        conn: The connection coming back.  Moved on every path, so there is no
+            drop flag and no chance of it being closed under the lock.
+        opened_at_ms: When its session began.
+        now: From `_now_ms`.
+        reusable: Whether it is fit to hand out again.
+
+    """
+    var doomed = List[_Pooled]()
+    var view = _lock(state)
+    state[].busy -= 1
+    if reusable and not state[].closed:
+        state[].idle.append(_Pooled(conn^, opened_at_ms, now))
+    else:
+        state[].discarded += 1
+        doomed.append(_Pooled(conn^, opened_at_ms, now))
+    state[].cond.signal()
+    view.unlock()
+    # Closed outside the lock: `PQfinish` is a syscall, and nothing else can
+    # reach this connection any more.
+    _ = doomed^
 
 
 # ===----------------------------------------------------------------------===#
@@ -753,32 +837,19 @@ struct Lease(Movable):
             # Close it: the escapee gets 08006 from its next call, which is a
             # diagnosable error, where pooling it would be a silent race.
             self._conn.close()
-            var view = _lock(state)
-            state[].busy -= 1
-            state[].escaped += 1
-            state[].discarded += 1
-            state[].cond.signal()
-            view.unlock()
+            _release_slot(state, discarded=True, escaped=True)
             return
 
         # Cleaning talks to the server, so it happens with the mutex released.
         # `config` is written once, before the state is shared, so reading it
-        # here needs no lock; `closed` is not, and is read below inside one.
+        # here needs no lock; `closed` is not, and is read inside one.
         var now = _now_ms()
         var life = state[].config.max_lifetime_ms
         var too_old = life > 0 and now - self._opened_at_ms >= life
         var clean = not too_old and _clean_for_reuse(
             self._conn, state[].config.on_return
         )
-
-        var view = _lock(state)
-        state[].busy -= 1
-        if clean and not state[].closed:
-            state[].idle.append(_Pooled(self._conn^, self._opened_at_ms, now))
-        else:
-            state[].discarded += 1
-        state[].cond.signal()
-        view.unlock()
+        _put_back(state, self._conn^, self._opened_at_ms, now, clean)
 
     def connection(mut self) -> ref[origin_of(self._conn)] Connection:
         """The leased connection.
@@ -938,7 +1009,20 @@ struct ConnectionPool(Movable):
                 config.min_idle,
             )
 
+        if conninfo.byte_length() < 8 or conninfo.byte_length() > 500:
+            raise Error(
+                "DEBUG: incoming conninfo byte_length is ",
+                conninfo.byte_length(),
+                " -- corrupt at ConnectionPool.__init__ entry",
+            )
         self._state = ArcPointer(_PoolState(conninfo, config))
+        if self._state[].conninfo.byte_length() != conninfo.byte_length():
+            raise Error(
+                "DEBUG: stored conninfo length ",
+                self._state[].conninfo.byte_length(),
+                " != incoming ",
+                conninfo.byte_length(),
+            )
 
         var now = _now_ms()
         for _ in range(config.min_idle):
