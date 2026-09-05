@@ -902,6 +902,128 @@ struct Connection(Movable):
         except:
             return False
 
+    def is_alive(self) -> Bool:
+        """Whether the socket is still there, without asking the server.
+
+        Between `Connection.is_open`, which is free but blind, and
+        `Connection.ping`, which is honest but costs a round trip.  This one
+        reads whatever the server has *already* sent -- a non-blocking
+        `PQconsumeInput` -- and then asks `PQstatus`.  Nothing is sent, so
+        there is no round trip; but a peer that has gone away has sent
+        something (an ``ErrorResponse``, or just the close), and this is what
+        collects it.
+
+        The difference is not academic.  A backend killed with
+        ``pg_terminate_backend``, a server restarted underneath a long-lived
+        client, a failover: `Connection.is_open` reports True through all of
+        them, because libpq's status is a cached opinion that only changes
+        when a command fails.  This reports False.
+
+        Returns:
+            True if the connection still looks usable.  False once the peer
+            has gone, or once `Connection.close` has run.
+
+        Note:
+            Cheap, not certain.  It cannot see a death whose notification has
+            not arrived yet, and it cannot see one that has not happened yet;
+            no local check can.  Use it to *avoid* handing out a connection
+            already known to be dead -- `pool.ConnectionPool` does exactly
+            that -- and keep handling the error from the next command anyway.
+
+            Only meaningful on an idle connection: mid-``COPY``, or with an
+            unread result outstanding, the bytes waiting on the socket belong
+            to whoever is driving that exchange.
+        """
+        var conn = self._cell[].conn
+        if conn == 0:
+            return False
+        try:
+            ref pq = libpq()
+            # Twice, and the second one is the point.  A backend that is going
+            # away sends an ``ErrorResponse`` and *then* closes: the first
+            # `PQconsumeInput` reads that message and reports success, because
+            # reading succeeded, and only the second reaches the end of the
+            # stream and flips the status.  One call sees a healthy socket with
+            # a farewell note sitting in it.  (The same goes for a stray
+            # ``NOTICE`` or ``NOTIFY``, which the first call drains and the
+            # second then looks past.)  Both are non-blocking reads; neither
+            # sends anything.
+            for _ in range(2):
+                if not pq.PQconsumeInput(conn):
+                    return False
+                if pq.PQstatus(conn) != CONNECTION_OK:
+                    return False
+            return True
+        except:
+            return False
+
+    def backend_pid(self) -> Int:
+        """The process ID of the backend serving this connection.
+
+        Free -- it was read from the server's startup packet, and no round
+        trip is involved.  It is the value ``pg_terminate_backend`` takes, and
+        it changes across a `Connection.reset`, which makes it the way to tell
+        a recycled session from a reused one.
+
+        Returns:
+            The backend PID, or ``0`` if the connection is closed.
+        """
+        var conn = self._cell[].conn
+        if conn == 0:
+            return 0
+        try:
+            return libpq().PQbackendPID(conn)
+        except:
+            return 0
+
+    def reset(mut self) -> Bool:
+        """Reconnect in place: same handle, same parameters, new session.
+
+        Blocks for as long as opening would.  The `PGconn` pointer does not
+        change, so every `Statement`, `Transaction` and COPY handle sharing
+        this connection stays valid -- but what they are pointed at is a
+        *different session*: no prepared statements, no temp tables, no open
+        transaction, and a different `Connection.backend_pid`.  A `Statement`
+        that survives a reset will therefore fail with SQLSTATE ``26000``,
+        which is the honest answer.
+
+        `pool.ConnectionPool` uses this to recycle a connection whose backend
+        died, rather than paying for a fresh `PGconn`.
+
+        Returns:
+            True if the new connection succeeded.  False leaves the handle
+            unusable -- close it.
+        """
+        var conn = self._cell[].conn
+        if conn == 0:
+            return False
+        try:
+            ref pq = libpq()
+            pq.PQreset(conn)
+            return pq.PQstatus(conn) == CONNECTION_OK
+        except:
+            return False
+
+    def _shares(self) -> Int:
+        """How many values are currently keeping this session open.
+
+        The `Connection` itself counts as one, so ``1`` means *nothing else*
+        holds it: no `Statement`, no `Transaction`, no `copy.CopyIn` or
+        `copy.CopyOut` made from it is still alive.  Anything higher means one
+        of those escaped the scope that made it.
+
+        This is what `pool.Lease` checks before it returns a connection to the
+        pool, and it is the whole reason the pool can promise that two threads
+        never share a `PGconn`: a handle that outlived its lease would keep
+        working on a connection the pool was about to hand to somebody else,
+        so a connection with shares above one is closed instead of pooled.
+
+        Returns:
+            The number of live shares of the underlying `_ConnCell`, counting
+            this `Connection`.
+        """
+        return Int(self._cell.count())
+
     def ping(mut self) -> Bool:
         """Whether the server answers a trivial query right now.
 

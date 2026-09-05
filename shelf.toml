@@ -1,6 +1,6 @@
 name = "postgres-mojo"
 version = "0.2.0"
-description = "A Mojo PostgreSQL client over libpq: parameterized queries, typed results, transactions, COPY, SQLSTATE errors"
-tags = ["postgres", "postgresql", "libpq", "database", "sql", "ffi", "magmalake"]
+description = "A Mojo PostgreSQL client over libpq: parameterized queries, typed results, transactions, COPY, SQLSTATE errors, connection pooling"
+tags = ["postgres", "postgresql", "libpq", "database", "sql", "ffi", "pool", "magmalake"]
 # other tins this one depends on; omit if none
-tins = []
+tins = ["threads-mojo"]

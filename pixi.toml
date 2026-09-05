@@ -26,6 +26,12 @@ postgresql = ">=16,<19"
 # back with it, and rows it writes are read back here, cell for cell.
 python = ">=3.11"
 psycopg = ">=3.2"
+# threads.mojo is what `postgres.pool` blocks on: a real `pthread_mutex_t` and
+# `pthread_cond_t` rather than a spin loop, plus the `parallel_for` the pool's
+# concurrency tests hammer it with. Pinned to the revision mojoshelf published
+# as 0.4.0 — a package dependency has to name a published rev, never local
+# HEAD, or a consumer cannot resolve it.
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
@@ -40,7 +46,12 @@ unit = "sh tests/run_unit.sh"
 # POSTGRES_TEST_DSN, runs the server suite and the psql/psycopg cross-check,
 # and stops it again on exit.
 server = "sh tests/run_tests.sh"
-test = { depends-on = ["unit", "server"] }
+# The pool suite, plus the negative control that proves its escape assertion
+# can fail. Separate from `server` because it is the only thing here that needs
+# the threads-mojo package — which the nightly toolchain cannot read, so
+# run_pool.sh skips with a reason there rather than failing. See its header.
+pool = "sh scripts/with-pg-server.sh sh tests/run_pool.sh"
+test = { depends-on = ["unit", "server", "pool"] }
 # Runs every examples/*.mojo file against a throwaway server; a failing
 # example aborts the run.
 examples = "sh scripts/with-pg-server.sh sh tests/run_examples.sh"
@@ -51,7 +62,12 @@ examples = "sh scripts/with-pg-server.sh sh tests/run_examples.sh"
 # bench-mojo tin, which lives only in the separate `bench` feature/environment
 # — and that environment has no mojo-lsp-server, so `--lsp` mode can't resolve
 # it from `default` or `stable` either way.
-lint = { cmd = "mojolint --lsp -I src src tests examples" }
+# $CONDA_PREFIX/lib/mojo is where the threads-mojo package lands, which is
+# what src/postgres/pool.mojo and tests/pool_test.mojo import. On the nightly
+# toolchain that package cannot be read at all (see tests/run_pool.sh), so
+# there the LSP simply sees an unresolved import in those two files; the rules
+# that do not need it still run, on every file.
+lint = { cmd = "mojolint --lsp -I src -I $CONDA_PREFIX/lib/mojo src tests examples" }
 
 format = "mojo format src tests examples bench"
 # `mojo format` has no check mode in 1.0.0, so the check is: format, then
@@ -92,12 +108,21 @@ backend = { name = "pixi-build-mojo", version = "0.*" }
 [package.build.config.pkg]
 path = "src/postgres"
 name = "postgres"
+# threads-mojo arrives as a .mojopkg in the host prefix; pixi-build-mojo does
+# not add that directory to the import path on its own.
+extra-args = ["-I", "$PREFIX/lib/mojo"]
 
 # libpq is dlopened at run time, never linked, so it is a run dependency only:
 # as a host dependency its run_exports would pin consumers to the minor
 # version the package happened to be built against.
+#
+# threads-mojo is different: `postgres.pool` imports it, so it has to be
+# present to *build* this package as well as to run it. It comes in by git
+# pinned to a commit rather than by path, because a published package has to
+# be self-contained.
 [package.host-dependencies]
 mojo-compiler = "==1.0.0"
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.0.0"
@@ -105,3 +130,4 @@ mojo-compiler = "==1.0.0"
 [package.run-dependencies]
 mojo-compiler = ">=1.0.0,<2"
 libpq = ">=16,<19"
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }

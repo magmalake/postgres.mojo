@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `postgres.pool` -- a connection pool for a long-lived, multi-threaded
+  service: `ConnectionPool`, `PoolConfig`, `PoolStats`, `PoolRef` and `Lease`.
+  Lazy growth to `max_size` with `min_idle` kept warm, blocking checkout on a
+  real `pthread_cond_t` (no spin) bounded by `acquire_timeout_ms`, `ROLLBACK`
+  on a dirty return (`DISCARD ALL` opt-in), and `max_lifetime_ms` /
+  `max_idle_ms` recycling so a failover is recovered from rather than held
+  through. Not re-exported from `postgres`: import it as
+  `from postgres.pool import ...`.
+- **The lease is the safety property.** `Statement`, `Transaction`, `CopyIn`
+  and `CopyOut` share the connection's `PGconn`, so one that outlived its
+  `with` block would become two threads on one `PGconn` once the connection
+  was pooled. `Lease` reads the share count when the lease ends and *closes*
+  such a connection instead of pooling it, counting it in `stats().escaped`;
+  the escapee then gets SQLSTATE `08006`. `tests/run_pool.sh` builds that
+  assertion a second time against a copy of the pool with the check removed,
+  and fails unless it fails.
+- `Connection.is_alive()` -- liveness with no round trip. `PQstatus` is a
+  cached opinion and still reads `CONNECTION_OK` after a backend is killed by
+  `pg_terminate_backend`; this consumes what the server already sent and sees
+  the death. It is what `PoolConfig.validate_on_checkout` uses.
+- `Connection.reset()` (reconnect in place: same handle, new session) and
+  `Connection.backend_pid()`.
+- `PQisthreadsafe`, `PQreset`, `PQconsumeInput` and `PQbackendPID` bound in
+  `postgres._ffi`. `ConnectionPool` refuses to build on a libpq without thread
+  safety rather than pretending it is safe.
+- SQLSTATE constants `CONNECTION_DOES_NOT_EXIST` (`08003`, a lease taken after
+  `close()`) and `TOO_MANY_CONNECTIONS` (`53300`, `acquire_timeout_ms`
+  elapsed).
+- `pixi run pool` -- the pool suite (21 tests: concurrent checkout with
+  per-session exclusivity assertions, exhaustion and timeout, a backend killed
+  with `pg_terminate_backend`, dirty-return rollback, escape detection,
+  `close()` with leases outstanding) plus the negative control.
+
+### Changed
+- `threads-mojo` is a new dependency, pinned at the revision published as
+  0.4.0. Only `postgres.pool` needs it, which is why that module is not
+  re-exported from the package root.
+
+### Known issues
+- `postgres.pool` builds on the **stable** toolchain only: a `.mojopkg` is
+  readable only by the compiler version that built it, and tins are built with
+  mojo 1.0.0, so `from threads import ...` does not resolve under the nightly.
+  `tests/run_pool.sh` detects that and skips with a reason rather than
+  failing. Nothing else in the tin is affected; the rest still builds and
+  tests on both toolchains.
+
 ## [0.2.0] — 2026-09-02
 
 ### Added

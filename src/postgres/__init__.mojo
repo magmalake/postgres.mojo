@@ -49,8 +49,26 @@ rounded on the way through.
 apart, and every typed accessor raises rather than inventing a zero value for a
 NULL cell.
 
-**No ORM, no async, no pooling.**  One `Connection` is one `PGconn`, usable
-from one thread, and you write the SQL.
+**No ORM and no async.**  One `Connection` is one `PGconn`, usable from one
+thread, and you write the SQL.
+
+**Pooling is opt-in and lives in `postgres.pool`.**  It is not re-exported
+here, because it pulls in the `threads` tin for its mutex and condition
+variable and a single-threaded caller should not carry that:
+
+```mojo
+from postgres.pool import ConnectionPool, PoolConfig
+
+var pool = ConnectionPool(dsn, PoolConfig(max_size=8))
+with pool.lease() as lease:
+    _ = lease.connection().execute("DELETE FROM sessions WHERE expires < now()")
+```
+
+`pool.Lease` is what makes that safe to do from several threads: a connection
+goes back into the pool only when nothing else is holding it, and a
+`Statement`, `Transaction` or COPY handle that outlives its `with` block costs
+the connection rather than being handed to a second thread.  See
+`postgres.pool`.
 
 ## Transactions and COPY
 
@@ -117,6 +135,8 @@ message; `sqlstate_of` reads it back out of a caught `Error`, and
 ## Modules
 
 - `postgres.connection` -- `Connection`, `Statement`, `Transaction`.
+- `postgres.pool` -- `ConnectionPool`, `Lease`, for a threaded service.  Not
+  re-exported; import it by name.
 - `postgres.copy` -- `CopyIn` and `CopyOut`, the ``COPY`` stream handles.
 - `postgres.result` -- `Result`, `Row` and the typed accessors.
 - `postgres.params` -- the `Params` builder for ``$1``-style parameters.
