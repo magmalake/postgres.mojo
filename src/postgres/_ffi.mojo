@@ -315,14 +315,18 @@ struct LibpqFFI(Movable):
 
     # -- library -------------------------------------------------------------
     var _fn_lib_version: def() thin abi("C") -> Int32
+    var _fn_is_threadsafe: def() thin abi("C") -> Int32
 
     # -- connection ----------------------------------------------------------
     var _fn_connectdb: def(Int) thin abi("C") -> Int
     var _fn_finish: def(Int) thin abi("C") -> None
+    var _fn_reset: def(Int) thin abi("C") -> None
     var _fn_status: def(Int) thin abi("C") -> Int32
     var _fn_error_message: def(Int) thin abi("C") -> Int
     var _fn_server_version: def(Int) thin abi("C") -> Int32
     var _fn_transaction_status: def(Int) thin abi("C") -> Int32
+    var _fn_consume_input: def(Int) thin abi("C") -> Int32
+    var _fn_backend_pid: def(Int) thin abi("C") -> Int32
 
     # -- command execution ---------------------------------------------------
     var _fn_exec: def(Int, Int) thin abi("C") -> Int
@@ -408,14 +412,26 @@ struct LibpqFFI(Movable):
         self._fn_lib_version = _dl_sym[def() thin abi("C") -> Int32](
             self._lib, "PQlibVersion"
         )
+        self._fn_is_threadsafe = _dl_sym[def() thin abi("C") -> Int32](
+            self._lib, "PQisthreadsafe"
+        )
         self._fn_connectdb = _dl_sym[def(Int) thin abi("C") -> Int](
             self._lib, "PQconnectdb"
         )
         self._fn_finish = _dl_sym[def(Int) thin abi("C") -> None](
             self._lib, "PQfinish"
         )
+        self._fn_reset = _dl_sym[def(Int) thin abi("C") -> None](
+            self._lib, "PQreset"
+        )
         self._fn_status = _dl_sym[def(Int) thin abi("C") -> Int32](
             self._lib, "PQstatus"
+        )
+        self._fn_consume_input = _dl_sym[def(Int) thin abi("C") -> Int32](
+            self._lib, "PQconsumeInput"
+        )
+        self._fn_backend_pid = _dl_sym[def(Int) thin abi("C") -> Int32](
+            self._lib, "PQbackendPID"
         )
         self._fn_error_message = _dl_sym[def(Int) thin abi("C") -> Int](
             self._lib, "PQerrorMessage"
@@ -509,6 +525,22 @@ struct LibpqFFI(Movable):
         """
         return Int(self._fn_lib_version())
 
+    def PQisthreadsafe(self) -> Bool:
+        """Whether this libpq was built with thread safety enabled.
+
+        A libpq compiled without ``--enable-thread-safety`` keeps per-*library*
+        rather than per-connection state, so two threads using two different
+        `PGconn`s can corrupt each other.  Every build since PostgreSQL 10 has
+        it on by default and the conda-forge build certainly does, but a pool
+        hands connections to threads for a living, so `pool.ConnectionPool`
+        checks this at construction rather than assuming it.
+
+        Returns:
+            True if concurrent use of *distinct* connections is safe.  It never
+            means two threads may share one `PGconn`; nothing makes that safe.
+        """
+        return Int(self._fn_is_threadsafe()) != 0
+
     # -- connection ----------------------------------------------------------
 
     def PQconnectdb(self, conninfo: String) -> PGconnPtr:
@@ -541,6 +573,21 @@ struct LibpqFFI(Movable):
         """
         if conn != 0:
             self._fn_finish(conn)
+
+    def PQreset(self, conn: PGconnPtr):
+        """Close `conn`'s socket and open a new one with the same parameters.
+
+        Recycling in place: the handle stays valid, so everything holding it
+        keeps working, but the *session* is new -- no prepared statements, no
+        temp tables, no open transaction, and a different backend PID.  Blocks
+        for as long as a fresh connect would, and leaves `LibpqFFI.PQstatus`
+        reporting `CONNECTION_BAD` if it failed.
+
+        Args:
+            conn: The connection handle; ``0`` is ignored.
+        """
+        if conn != 0:
+            self._fn_reset(conn)
 
     def PQstatus(self, conn: PGconnPtr) -> Int:
         """Report whether `conn` is usable.
@@ -600,6 +647,58 @@ struct LibpqFFI(Movable):
         if conn == 0:
             return PQTRANS_UNKNOWN
         return Int(self._fn_transaction_status(conn))
+
+    def PQconsumeInput(self, conn: PGconnPtr) -> Bool:
+        """Read whatever the server has already sent, without waiting for more.
+
+        A non-blocking `recv` on the connection's socket: it drains the kernel
+        buffer into libpq's, and returns without waiting if there is nothing
+        there.  No round trip -- nothing is sent.
+
+        This is how a *dead* connection is noticed cheaply.
+        `LibpqFFI.PQstatus` only reports libpq's cached opinion, and that
+        opinion does not change when the peer goes away: a backend killed by
+        ``pg_terminate_backend``, a server restarted underneath the pool, or a
+        connection dropped by a failover all still read `CONNECTION_OK` until
+        something actually touches the socket.  The terminating backend does
+        send an ``ErrorResponse`` and then closes; this call is what collects
+        it, and it flips the status to `CONNECTION_BAD`.
+
+        Args:
+            conn: The connection handle.
+
+        Returns:
+            True on success -- which says the socket is still healthy, *not*
+            that anything arrived.  False means a fatal error, and
+            `LibpqFFI.PQstatus` will then report `CONNECTION_BAD`.  A NULL
+            handle reads as False.
+
+        Note:
+            Only meaningful on an idle connection.  Mid-``COPY`` or with an
+            unread result outstanding, this is part of the async protocol and
+            belongs to whoever is driving it.
+        """
+        if conn == 0:
+            return False
+        return Int(self._fn_consume_input(conn)) != 0
+
+    def PQbackendPID(self, conn: PGconnPtr) -> Int:
+        """The process ID of the backend serving `conn`.
+
+        Read from the startup packet, so this costs nothing and needs no
+        server round trip.  It is the value ``pg_terminate_backend`` takes, and
+        it changes after a `LibpqFFI.PQreset`, which makes it the way to prove
+        a connection really was recycled rather than handed back.
+
+        Args:
+            conn: The connection handle.
+
+        Returns:
+            The backend PID, or ``0`` if the connection is not open.
+        """
+        if conn == 0:
+            return 0
+        return Int(self._fn_backend_pid(conn))
 
     # -- command execution ---------------------------------------------------
 

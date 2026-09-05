@@ -55,8 +55,9 @@ what the server actually does. This tin sends parameters and reads results as
 **text**, not libpq's binary format: one codec (`postgres.text`) is both
 directions of the wire, and there is nothing to keep in sync between an
 encoder and a separate binary decoder. It is deliberately **not** an ORM, has
-no `async`, and pools nothing — one `Connection` is one `PGconn`, used from
-one thread, and the caller writes the SQL. The motivating use is a
+no `async`, and one `Connection` is one `PGconn`, used from one thread, with
+the caller writing the SQL. Pooling is opt-in and lives in one module of its
+own — see [Pooling](#pooling). The motivating use is a
 Postgres-backed Iceberg catalog (PyIceberg's `SqlCatalog`) for
 [iceberg.mojo](https://github.com/magmalake/iceberg.mojo), which needs exactly
 this: connect, run parameterized SQL, read typed rows, and nothing more.
@@ -198,6 +199,7 @@ see [`examples/`](examples/) for the full, runnable files.
 | `Connection` | One `PGconn`. `execute`, `query`, `prepare`, `begin`, `copy_in`/`copy_out`, `close`. |
 | `Statement` | A server-prepared statement from `Connection.prepare`; `execute`/`query` with new params. |
 | `Transaction` | The guard from `Connection.begin`; rolls back on drop unless `commit()` ran. |
+| `pool.ConnectionPool` / `pool.Lease` | The connection pool, for a threaded service. Not re-exported; `from postgres.pool import ...`. |
 | `CopyIn` / `CopyOut` | The `COPY ... FROM/TO STDIN/STDOUT` stream handles, from `copy_in`/`copy_out`. |
 | `Result` / `Row` | A query's rows; `Row` is a snapshot that outlives the `Result` that produced it. |
 | `Params` | A chainable builder for `$1`-style parameters, one typed method per type below. |
@@ -283,6 +285,102 @@ an exotic one). `Connection.close()` is the exception: it ends the session
 immediately, whoever else is still holding it, and every handle then raises
 SQLSTATE `08006` on its next call rather than reaching a freed `PGconn`.
 
+## Pooling
+
+`postgres.pool` is a connection pool for a **long-lived service**: one pool for
+the process lifetime, several threads leasing from it, and connections recycled
+underneath so a failover is recovered from rather than held through. It is not
+re-exported from `postgres`, because it pulls in
+[threads.mojo](https://github.com/magmalake/threads.mojo) for its mutex and
+condition variable and a single-threaded caller should not carry that.
+
+```mojo
+from postgres import Params
+from postgres.pool import ConnectionPool, PoolConfig
+
+var pool = ConnectionPool(
+    "postgresql://localhost/app?connect_timeout=5",
+    PoolConfig(max_size=8, min_idle=1, acquire_timeout_ms=2000),
+)
+
+with pool.lease() as lease:
+    var res = lease.connection().query(
+        "SELECT id, name FROM t WHERE id = $1", Params().int64(1)
+    )
+    for row in res:
+        print(row.int64("id"), row.text("name"))
+
+print(pool.stats())   # idle, busy, opened, recycled, discarded, escaped, waits, timeouts
+```
+
+A worker thread reaches the pool through `pool.ref()`, which is copyable and
+travels in the context struct `threads`' `parallel_for` or `TypedPool` hands
+around; every ref and every outstanding lease keeps the pool's state alive.
+
+### The lease is the safety property
+
+Read [Ownership](#ownership) first: a `Statement`, `Transaction`, `CopyIn` or
+`CopyOut` **co-owns** the `PGconn`, deliberately, so it can outlive the
+`Connection` value. Pool that connection while such a handle is still alive and
+it becomes two threads on one `PGconn` — which libpq forbids, and which
+corrupts the protocol stream silently rather than crashing.
+
+So the lease enforces the invariant rather than documenting it. When the `with`
+block ends, `Lease` asks the connection how many things are holding it. One
+means nothing escaped, and the connection is cleaned and pooled. More means a
+handle outlived the block, and the connection is **closed** instead of pooled
+and counted in `stats().escaped`; the escapee gets SQLSTATE `08006` from its
+next call. The failure mode of losing track is *"you lost a connection"*, never
+*"two threads share one"* — the same shape as `Transaction`'s promise that
+losing track means "nothing happened", never "half of it happened".
+
+That also settles transactions: a `Transaction` alive at the end of a lease
+*is* a share, so a transaction cannot span two checkouts. It is enforced, not
+assumed.
+
+A `Result` is the one thing that may freely outlive its lease. It owns its
+`PGresult` outright rather than sharing the connection, and libpq lets a result
+outlive the connection it came from.
+
+### What it does on return, and on checkout
+
+**On return:** `ROLLBACK` if `PQtransactionStatus` says a block is open — so a
+lease cannot leak one into the next caller — and `DISCARD ALL` as well if
+`on_return` asks for it. `DISCARD ALL` is opt-in because it is safer *and*
+throws away the prepared statements a service reissuing the same queries is
+paying to keep.
+
+**On checkout:** most-recently-returned first, then aged out against
+`max_lifetime_ms` and `max_idle_ms` and checked with `Connection.is_alive()`.
+A connection that fails is recycled in place with `PQreset` — same handle, new
+session — and only closed outright if that fails too.
+
+`is_alive()` is a non-blocking read of what the server has already sent: no
+round trip, unlike `ping()`. It is deliberately not `is_open()`, which
+*cannot* see this — `PQstatus` reports a cached opinion, and a backend killed
+by `pg_terminate_backend` still reads `CONNECTION_OK` until a command fails on
+it. No local check can be certain; what the pool guarantees is that a
+*known*-dead connection is never handed out, and that one which died in a
+caller's hands is discarded on return rather than pooled.
+
+### Reaping is yours to schedule
+
+Idle connections age out when they are next picked up, and `pool.reap()` does
+the same sweep on demand — closing anything past `max_idle_ms`, never below
+`min_idle`, and reopening back up to `min_idle`. There is no reaper thread: a
+thread inside a library owes its caller a lifecycle, and a detached thread
+waiting on a condition variable that is about to be destroyed is precisely the
+use-after-free this module exists to rule out. A service that must not pin
+backends overnight already has a timer; `reap()` is one call on it.
+
+### Caveat: stable toolchain only
+
+`postgres.pool` builds under **mojo 1.0.0** only. A `.mojopkg` is readable only
+by the compiler version that built it, and tins are built with 1.0.0, so
+`from threads import ...` does not resolve under the nightly. `pixi run pool`
+detects this and skips with a reason there. The rest of the tin is unaffected
+and still builds and tests on both.
+
 ## Performance
 
 Four benchmarks over `(id int8, price numeric(12,4), qty int4, label text)`,
@@ -309,8 +407,9 @@ scan benchmark pays for, arriving as digits and staying a `String`.
 ## Test
 
 ```sh
-pixi run test              # unit + server + crosscheck
+pixi run test              # unit + server + crosscheck + pool
 pixi run -e stable test    # same, on Mojo 1.0.0
+pixi run pool              # just the pool suite and its negative control
 pixi run examples          # every examples/*.mojo file, against a live server
 ```
 
@@ -337,8 +436,31 @@ pixi run examples          # every examples/*.mojo file, against a live server
   cross-checked a third way against `psql ... COPY ... TO STDOUT` of the same
   table.
 
-The server suite and the cross-check start a throwaway PostgreSQL cluster from
-the conda `postgresql` package on a free port and stop it on exit. No Docker.
+- **21 pool tests** (`pixi run pool`, stable toolchain only) — concurrent
+  checkout from twelve threads over a four-connection pool, each lease
+  asserting that the session marker it set is still its own when it reads it
+  back (a shared `PGconn` fails that deterministically); exhaustion raising
+  `53300` on `acquire_timeout_ms` and recovering when a lease is released; a
+  pooled backend killed with `pg_terminate_backend` and the pool recycling it
+  in place rather than handing back a dead socket; a lease that leaves a
+  transaction open being rolled back before the next checkout sees it; and
+  escape detection for both a `Statement` and a `Transaction` outliving their
+  lease. Plus a **negative control**: `tests/run_pool.sh` rebuilds the escape
+  assertion against a copy of the pool with the refcount check replaced by a
+  constant, and fails unless that build *fails* the assertion. An escape that
+  goes undetected is a silent race rather than a visible error, so the one
+  check standing between the pool and that outcome is shown to have teeth
+  rather than merely to be green.
+
+The server suite, the cross-check and the pool suite each start a throwaway
+PostgreSQL cluster from the conda `postgresql` package on a free port and stop
+it on exit. No Docker.
+
+ThreadSanitizer is deliberately not used on the pool suite: the Mojo 1.0.0
+runtime allocator is invisible to TSan's intercepts, so any allocating threaded
+Mojo program reports races that are not there. `test_repeated_concurrent_bursts_stay_correct`
+— the same contended workload run five times over one pool — is what stands in
+for it.
 
 ## Scope
 
@@ -346,7 +468,10 @@ In scope: connections, `$n` parameters, prepared statements, typed text-format
 results, transactions with savepoints, `COPY` (text and CSV), and SQLSTATE on
 every error.
 
-Out of scope: an ORM or query builder, `async`, connection pooling,
+Also in scope, in `postgres.pool` and nowhere else: connection pooling for a
+threaded service — see [Pooling](#pooling).
+
+Out of scope: an ORM or query builder, `async`,
 `LISTEN`/`NOTIFY`, and binary-format results or parameters (§9's open
 question — the [Performance](#performance) numbers above are the baseline it
 will be measured against). A `NOTICE`/`WARNING` the server raises is printed

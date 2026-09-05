@@ -52,6 +52,14 @@ comptime LOCK_NOT_AVAILABLE: StaticString = "55P03"
 comptime ADMIN_SHUTDOWN: StaticString = "57P01"
 comptime CONNECTION_FAILURE: StaticString = "08006"
 comptime SQLCLIENT_UNABLE_TO_ESTABLISH: StaticString = "08001"
+comptime CONNECTION_DOES_NOT_EXIST: StaticString = "08003"
+"""Raised by `pool.ConnectionPool.lease` for a lease taken after
+`pool.ConnectionPool.close`."""
+comptime TOO_MANY_CONNECTIONS: StaticString = "53300"
+"""Raised by `pool.ConnectionPool.lease` when
+`pool.PoolConfig.acquire_timeout_ms` elapses with every connection checked
+out.  The server uses this same code when it runs out of backends, which is
+the same condition one layer down."""
 
 
 # ===----------------------------------------------------------------------===#

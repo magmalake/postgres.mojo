@@ -29,7 +29,11 @@ jobs:
       # `unit` needs no server. `server` starts a throwaway PostgreSQL cluster
       # from the conda `postgresql` package (no Docker, no service container —
       # GitHub's macOS runners have neither), runs the live suite and the
-      # psql/psycopg cross-check against it, and stops it on exit.
+      # psql/psycopg cross-check against it, and stops it on exit. `pool` does
+      # the same for the connection-pool suite and its negative control, and
+      # runs only on `stable`: it imports the threads-mojo package, and a
+      # .mojopkg is readable only by the compiler that built it, so on the
+      # nightly leg tests/run_pool.sh prints why and skips.
       - name: Tests
         run: pixi run -e ${{ matrix.env }} test
 
