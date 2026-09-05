@@ -7,9 +7,10 @@
 > Part of [**magmalake**](https://magmalake.org) — data lake building blocks in Mojo.
 
 A PostgreSQL client for Mojo over [libpq](https://www.postgresql.org/docs/current/libpq.html):
-connections, parameterized statements, typed results, transactions and `COPY`,
-with errors that carry their SQLSTATE. Text format on the wire, no ORM, no
-async, no pooling — a client, not a framework.
+connections, parameterized statements, typed results, transactions, `COPY`,
+and a [connection pool](#pooling) for services that check connections out from
+several threads — with errors that carry their SQLSTATE. Text format on the
+wire, no ORM and no async — a client, not a framework.
 
 ## This is a fork
 
