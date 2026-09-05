@@ -36,7 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLSTATE constants `CONNECTION_DOES_NOT_EXIST` (`08003`, a lease taken after
   `close()`) and `TOO_MANY_CONNECTIONS` (`53300`, `acquire_timeout_ms`
   elapsed).
-- `pixi run pool` -- the pool suite (21 tests: concurrent checkout with
+- **A lease may outlive the pool value**, and holds the last share of the
+  pool's state when it does -- which is the ordinary case, since Mojo destroys
+  a value at its last use and `pool.lease()` is often the last mention of the
+  pool. Every critical section therefore lives in a function that takes the
+  state as a *borrowed* argument, so the mutex cannot be freed before its own
+  unlock. `test_a_lease_may_outlive_the_pool_value` pins it, a hundred times
+  over, because the failure it guards against is a silent few-byte write into
+  freed heap that surfaces as a crash somewhere else entirely.
+- `pixi run pool` -- the pool suite (22 tests: concurrent checkout with
   per-session exclusivity assertions, exhaustion and timeout, a backend killed
   with `pg_terminate_backend`, dirty-return rollback, escape detection,
   `close()` with leases outstanding) plus the negative control.

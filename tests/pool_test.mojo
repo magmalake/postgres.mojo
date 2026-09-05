@@ -793,6 +793,47 @@ def _result_from_a_lease(pool: PoolRef) raises -> Result:
         return lease.connection().query("SELECT 42 AS n")
 
 
+def _lease_from_a_pool_that_dies_first() raises:
+    """One lease whose `ConnectionPool` value is already gone.
+
+    `pool.lease()` is the last textual mention of `pool`, so Mojo destroys the
+    `ConnectionPool` right there, and the `Lease` is left holding the **last**
+    share of the pool's state -- the `pthread_mutex_t` included.  Ending the
+    lease then has to not free that mutex out from under its own unlock.
+
+    Raises:
+        Error: If the lease or the query failed.
+    """
+    var pool = _pool(PoolConfig(max_size=1, min_idle=1, max_idle_ms=0))
+    with pool.lease() as lease:
+        _ = lease.connection().execute("SELECT 1")
+
+
+def test_a_lease_may_outlive_the_pool_value() raises:
+    """Repeated, because what this pins is a *quiet* corruption.
+
+    The failure it guards against writes a few bytes into a freed heap block:
+    nothing observable happens at the time, and it surfaces as a crash in
+    whatever allocates next -- which was, when this was a live bug, an
+    unrelated test three functions later.  One iteration proves nothing; a
+    hundred, each opening and closing a real connection, gives the allocator
+    every chance to hand that block to somebody else first.  It failed on
+    Linux at five iterations and never on macOS at all.
+
+    Raises:
+        Error: On any failure, including a crash in a later allocation.
+    """
+    for _ in range(100):
+        _lease_from_a_pool_that_dies_first()
+
+    # And the pool machinery still works afterwards.
+    var pool = _pool(PoolConfig(max_size=2, min_idle=1, max_idle_ms=0))
+    with pool.lease() as lease:
+        var res = lease.connection().query("SELECT 8 AS n")
+        assert_equal(res.row(0).int64("n"), 8)
+    assert_equal(pool.stats().escaped, 0)
+
+
 def test_a_result_may_outlive_its_lease() raises:
     var pool = _pool(PoolConfig(max_size=2, min_idle=1, max_idle_ms=0))
 

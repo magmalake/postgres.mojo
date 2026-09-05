@@ -436,7 +436,7 @@ pixi run examples          # every examples/*.mojo file, against a live server
   cross-checked a third way against `psql ... COPY ... TO STDOUT` of the same
   table.
 
-- **21 pool tests** (`pixi run pool`, stable toolchain only) — concurrent
+- **22 pool tests** (`pixi run pool`, stable toolchain only) — concurrent
   checkout from twelve threads over a four-connection pool, each lease
   asserting that the session marker it set is still its own when it reads it
   back (a shared `PGconn` fails that deterministically); exhaustion raising
@@ -445,7 +445,10 @@ pixi run examples          # every examples/*.mojo file, against a live server
   in place rather than handing back a dead socket; a lease that leaves a
   transaction open being rolled back before the next checkout sees it; and
   escape detection for both a `Statement` and a `Transaction` outliving their
-  lease. Plus a **negative control**: `tests/run_pool.sh` rebuilds the escape
+  lease; and a lease outliving the *pool value* — the ordinary case, since
+  Mojo destroys a value at its last use — run a hundred times over, because
+  what it guards against is a silent few-byte write into freed heap that
+  surfaces as a crash somewhere else entirely. Plus a **negative control**: `tests/run_pool.sh` rebuilds the escape
   assertion against a copy of the pool with the refcount check replaced by a
   constant, and fails unless that build *fails* the assertion. An escape that
   goes undetected is a silent race rather than a visible error, so the one
