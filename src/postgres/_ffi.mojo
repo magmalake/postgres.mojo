@@ -48,7 +48,7 @@ record which is which at the call site.
 Do not call `LibpqFFI` methods from user code -- use `connection.mojo`.
 """
 
-from std.ffi import _Global, OwnedDLHandle, RTLD, CStringSlice
+from std.ffi import _Global, OwnedDLHandle, RTLD, CStringSpan
 from std.memory import Pointer
 from std.os import abort, getenv
 from std.sys.info import CompilationTarget
@@ -177,7 +177,7 @@ def _cstr_to_string(addr: Int) -> String:
     if addr == 0:
         return String("")
     var p = Pointer[Int8, MutUntrackedOrigin](unsafe_from_address=addr)
-    return String(StringSlice(unsafe_from_utf8=CStringSlice(unsafe_from_ptr=p)))
+    return String(StringSlice(unsafe_from_utf8=CStringSpan(unsafe_from_ptr=p)))
 
 
 def _c_string(s: String) -> List[UInt8]:
