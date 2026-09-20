@@ -31,11 +31,11 @@ psycopg = ">=3.2"
 # concurrency tests hammer it with. Pinned to the revision mojoshelf published
 # as 0.4.0 — a package dependency has to name a published rev, never local
 # HEAD, or a consumer cannot resolve it.
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "e8790abf928c96073a5457462558cad9cb52656d" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "3fa66644756c1de7aece83e5a89375323b6e0ce7" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "5682b29cedd8d7cd768543ef26ab930732232b79" }
 
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
@@ -70,22 +70,22 @@ examples = "sh scripts/with-pg-server.sh sh tests/run_examples.sh"
 lint = { cmd = "mojolint --lsp -I src -I $CONDA_PREFIX/lib/mojo src tests examples" }
 
 format = "mojo format src tests examples bench"
-# `mojo format` has no check mode in 1.0.0, so the check is: format, then
+# `mojo format` has no check mode in 1.1.0, so the check is: format, then
 # assert the tree did not move.
 format-check = { cmd = "mojo format src tests examples bench && git diff --exit-code -- src tests examples bench" }
 
 [feature.nightly.dependencies]
-modular = ">=26.6.0.dev2026082605,<27"
+modular = ">=26.7.0.dev2026092005,<28"
 
 [feature.stable.dependencies]
-mojo-compiler = "==1.0.0"
+mojo-compiler = "==1.1.0"
 
 # Benchmarks run through the shared harness (magmalake/bench.mojo) and get
 # their own feature, so the tin stays out of the environments that run tests.
 # Stable only: a precompiled Mojo package is stamped with the compiler version
-# that built it, and tins build with 1.0.0.
+# that built it, and tins build with 1.1.0.
 [feature.bench.dependencies]
-bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "4f4440fa6e61c9ca7c7573ca6aa2f8f1d606d88a" }
+bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "e12117679ea7d55c16a7250958340fa096e49eed" }
 
 [feature.bench.tasks]
 bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo -o build/bench-postgres && sh scripts/with-pg-server.sh ./build/bench-postgres"
@@ -121,13 +121,13 @@ extra-args = ["-I", "$PREFIX/lib/mojo"]
 # pinned to a commit rather than by path, because a published package has to
 # be self-contained.
 [package.host-dependencies]
-mojo-compiler = "==1.0.0"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }
+mojo-compiler = "==1.1.0"
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "e8790abf928c96073a5457462558cad9cb52656d" }
 
 [package.build-dependencies]
-mojo-compiler = "==1.0.0"
+mojo-compiler = "==1.1.0"
 
 [package.run-dependencies]
-mojo-compiler = ">=1.0.0,<2"
+mojo-compiler = ">=1.1.0,<2"
 libpq = ">=16,<19"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "772dd842d4222aeae48e4eda9766ff2edec1bdff" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "e8790abf928c96073a5457462558cad9cb52656d" }
