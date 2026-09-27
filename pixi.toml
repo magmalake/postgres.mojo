@@ -85,7 +85,7 @@ mojo-compiler = "==1.1.0"
 # Stable only: a precompiled Mojo package is stamped with the compiler version
 # that built it, and tins build with 1.1.0.
 [feature.bench.dependencies]
-bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "e12117679ea7d55c16a7250958340fa096e49eed" }
+bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "373e3903e724b79a47d5f5921e690ef95d31b09f" }
 
 [feature.bench.tasks]
 bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo -o build/bench-postgres && sh scripts/with-pg-server.sh ./build/bench-postgres"

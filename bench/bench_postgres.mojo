@@ -137,13 +137,12 @@ def bench_copy_in_100k(mut b: Benchmark) raises:
     var payload = _payload(COPY_ROWS)
     b.throughput(Metric.elements(), COPY_ROWS)
 
-    @parameter
-    def call() raises:
+    def call() raises {mut conn, imm payload}:
         var cp = conn.copy_in("COPY bench_copy FROM STDIN")
         cp.write(Span(payload))
         keep(cp.finish())
 
-    b.iter[call]()
+    b.iter(call)
     keep(payload)
     _ = conn.server_version()  # a use after `b.iter`: the capture stays live
 
@@ -154,8 +153,7 @@ def bench_select_scan_100k(mut b: Benchmark) raises:
     _fill(conn, "bench_scan", COPY_ROWS)
     b.throughput(Metric.elements(), COPY_ROWS)
 
-    @parameter
-    def call() raises:
+    def call() raises {mut conn}:
         var res = conn.query("SELECT id, price, label FROM bench_scan")
         var total: Int64 = 0
         var bytes = 0
@@ -165,7 +163,7 @@ def bench_select_scan_100k(mut b: Benchmark) raises:
         keep(total)
         keep(bytes)
 
-    b.iter[call]()
+    b.iter(call)
     _ = conn.server_version()
 
 
@@ -178,8 +176,7 @@ def bench_insert_prepared_10k(mut b: Benchmark) raises:
     )
     b.throughput(Metric.elements(), ROUND_TRIPS)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm stmt}:
         for i in range(ROUND_TRIPS):
             keep(
                 stmt.execute(
@@ -191,7 +188,7 @@ def bench_insert_prepared_10k(mut b: Benchmark) raises:
                 )
             )
 
-    b.iter[call]()
+    b.iter(call)
     _ = conn.server_version()  # a use after `b.iter`: the capture stays live
 
 
@@ -202,8 +199,7 @@ def bench_select_by_id_10k(mut b: Benchmark) raises:
     _ = conn.execute("ALTER TABLE bench_lookup ADD PRIMARY KEY (id)")
     b.throughput(Metric.elements(), ROUND_TRIPS)
 
-    @parameter
-    def call() raises:
+    def call() raises {mut conn}:
         for i in range(ROUND_TRIPS):
             var res = conn.query(
                 "SELECT id, price, qty, label FROM bench_lookup WHERE id = $1",
@@ -211,7 +207,7 @@ def bench_select_by_id_10k(mut b: Benchmark) raises:
             )
             keep(res.row(0).int64(0))
 
-    b.iter[call]()
+    b.iter(call)
     _ = conn.server_version()
 
 
