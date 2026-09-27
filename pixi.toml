@@ -4,7 +4,7 @@ authors = [
     "Marius S <39998+winding-lines@users.noreply.github.com>",
 ]
 name = "postgres.mojo"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Mojo PostgreSQL client over libpq via FFI: connections, parameterized statements, typed text-format results, transactions and COPY."
 license = "Apache-2.0"
 preview = ["pixi-build"]
@@ -100,7 +100,7 @@ bench = ["stable", "bench"]
 # Mojo import stays `from postgres import …`.
 [package]
 name = "postgres-mojo"
-version = "0.3.0"
+version = "0.3.1"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }

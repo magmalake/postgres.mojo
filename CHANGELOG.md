@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-09-26
+
+### Changed
+- Built with Mojo 1.1.0. `mojo-compiler` is pinned `==1.1.0` for the package
+  build and required `>=1.1.0,<2` at run time, and the `nightly` environment
+  tracks Mojo 1.2.0.dev. The published 0.3.0 was built with 1.0.0, whose
+  precompiled `.mojoc` a 1.1.0 compiler refuses.
+
+## [0.3.0] — 2026-09-05
+
 ### Added
 - `postgres.pool` -- a connection pool for a long-lived, multi-threaded
   service: `ConnectionPool`, `PoolConfig`, `PoolStats`, `PoolRef` and `Lease`.
