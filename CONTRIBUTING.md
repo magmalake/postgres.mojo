@@ -1,7 +1,7 @@
 # Contributing
 
 1. Fork, branch off `main`.
-2. `pixi run test` on both toolchains (`pixi run -e stable test` for 1.0.0) —
+2. `pixi run test` on both toolchains (`pixi run -e stable test` for 1.1.0) —
    the server suite needs nothing but the conda env, it starts its own cluster.
 3. `pixi run format-check` before committing.
 4. If you change the public API, update `README.md` and `examples/`.

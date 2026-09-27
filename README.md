@@ -23,7 +23,7 @@ inventory are his. Thank you.
 **What changed here, and why.** Upstream targets Mojo 0.25.7, where FFI and
 pointer APIs have since moved, and it reaches libpq through `PQexec` plus
 `PQescapeLiteral` — values are escaped into SQL text, so there is no way to
-bind a parameter. This fork is a rewrite on the 1.x toolchain (stable 1.0.0 and
+bind a parameter. This fork is a rewrite on the 1.x toolchain (stable 1.1.0 and
 nightly) that keeps the shape and replaces the substance: `PQexecParams` and
 prepared statements instead of escaping, a process-wide libpq handle instead
 of `external_call`, SQLSTATE on every error, transactions, `COPY`, and a test
@@ -376,8 +376,8 @@ backends overnight already has a timer; `reap()` is one call on it.
 
 ### Caveat: stable toolchain only
 
-`postgres.pool` builds under **mojo 1.0.0** only. A `.mojopkg` is readable only
-by the compiler version that built it, and tins are built with 1.0.0, so
+`postgres.pool` builds under **mojo 1.1.0** only. A precompiled `.mojoc` is readable only
+by the compiler version that built it, and tins are built with 1.1.0, so
 `from threads import ...` does not resolve under the nightly. `pixi run pool`
 detects this and skips with a reason there. The rest of the tin is unaffected
 and still builds and tests on both.
@@ -409,17 +409,17 @@ scan benchmark pays for, arriving as digits and staying a `String`.
 
 ```sh
 pixi run test              # unit + server + crosscheck + pool
-pixi run -e stable test    # same, on Mojo 1.0.0
+pixi run -e stable test    # same, on Mojo 1.1.0
 pixi run pool              # just the pool suite and its negative control
 pixi run examples          # every examples/*.mojo file, against a live server
 ```
 
-- **149 unit tests** (`pixi run unit`, no server) — config rendering, SQLSTATE
+- **Unit tests** (`pixi run unit`, no server) — config rendering, SQLSTATE
   parsing, the text-format codec (including a 4,321-day date sweep and every
   `timestamptz` offset spelling), the `Params` builder, the `COPY` encoder and
   decoder, and a `PQlibVersion()` call proving libpq loads from
   `$CONDA_PREFIX`.
-- **42 server tests** (`pixi run server`, starts a throwaway cluster) — every
+- **Server tests** (`pixi run server`, starts a throwaway cluster) — every
   type round-tripped through `Params` and decoded from a server-side cast,
   NULL vs. empty string, transactions and savepoints, `COPY` in both
   directions and both sub-formats, every error path, and ownership: a
@@ -437,7 +437,7 @@ pixi run examples          # every examples/*.mojo file, against a live server
   cross-checked a third way against `psql ... COPY ... TO STDOUT` of the same
   table.
 
-- **22 pool tests** (`pixi run pool`, stable toolchain only) — concurrent
+- **Pool tests** (`pixi run pool`, stable toolchain only) — concurrent
   checkout from twelve threads over a four-connection pool, each lease
   asserting that the session marker it set is still its own when it reads it
   back (a shared `PGconn` fails that deterministically); exhaustion raising

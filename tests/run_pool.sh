@@ -8,7 +8,7 @@
 # Two things here are not in tests/run_tests.sh:
 #
 #   (a) The toolchain gate. `postgres.pool` imports the threads-mojo tin,
-#       which arrives as a .mojopkg compiled by mojo 1.0.0 — and a Mojo
+#       which arrives as a .mojoc compiled by mojo 1.1.0 — and a Mojo
 #       package is only readable by the compiler version that built it. On the
 #       nightly toolchain the import simply does not resolve, so this skips
 #       with a reason instead of failing, exactly as with-pg-server.sh skips a
@@ -37,8 +37,8 @@ if ! mojo build build/pool-toolchain-probe.mojo $INCLUDES \
         -o build/pool-toolchain-probe >build/pool-toolchain-probe.log 2>&1
 then
     echo "== pool tests: skipped — this toolchain cannot read the threads-mojo"
-    echo "   package (a .mojopkg is readable only by the compiler that built"
-    echo "   it, and tins are built with mojo 1.0.0). Run \`pixi run -e stable"
+    echo "   package (a .mojoc is readable only by the compiler that built"
+    echo "   it, and tins are built with mojo 1.1.0). Run \`pixi run -e stable"
     echo "   pool\`."
     exit 0
 fi
