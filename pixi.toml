@@ -75,7 +75,7 @@ format = "mojo format src tests examples bench"
 format-check = { cmd = "mojo format src tests examples bench && git diff --exit-code -- src tests examples bench" }
 
 [feature.nightly.dependencies]
-modular = ">=26.7.0.dev2026092005,<28"
+modular = ">=26.7.0.dev2026101905,<28"
 
 [feature.stable.dependencies]
 mojo-compiler = "==1.1.0"
