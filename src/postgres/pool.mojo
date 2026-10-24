@@ -621,7 +621,7 @@ def _open_one(state: ArcPointer[_PoolState]) raises -> Connection:
     var m = ci.byte_length()
     if m != n:
         raise Error("DEBUG: copy length ", m, " != source ", n)
-    return Connection(ci^)
+    return Connection(ci)
 
 
 def _expired(state: ArcPointer[_PoolState], entry: _Pooled, now: Int) -> Bool:
