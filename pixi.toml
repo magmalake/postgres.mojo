@@ -4,7 +4,7 @@ authors = [
     "Marius S <39998+winding-lines@users.noreply.github.com>",
 ]
 name = "postgres.mojo"
-version = "0.3.1"
+version = "0.3.2"
 description = "A Mojo PostgreSQL client over libpq via FFI: connections, parameterized statements, typed text-format results, transactions and COPY."
 license = "Apache-2.0"
 preview = ["pixi-build"]
@@ -31,11 +31,11 @@ psycopg = ">=3.2"
 # concurrency tests hammer it with. Pinned to the revision mojoshelf published
 # as 0.4.0 — a package dependency has to name a published rev, never local
 # HEAD, or a consumer cannot resolve it.
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "32a7ef8746bc728f00677ed45641cc4de796a09d" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "f45e780a8de77278c140cee36904e46e93e0ca1c" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "4a635f9a0ca0b7b639cd3823534cf0b36ff63985" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "5799cd56eca15ad142a9c8ba300ad45c5eca96f4" }
 
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
@@ -100,7 +100,7 @@ bench = ["stable", "bench"]
 # Mojo import stays `from postgres import …`.
 [package]
 name = "postgres-mojo"
-version = "0.3.1"
+version = "0.3.2"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }
@@ -122,7 +122,7 @@ extra-args = ["-I", "$PREFIX/lib/mojo"]
 # be self-contained.
 [package.host-dependencies]
 mojo-compiler = "==1.2.0"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "32a7ef8746bc728f00677ed45641cc4de796a09d" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "f45e780a8de77278c140cee36904e46e93e0ca1c" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.2.0"
@@ -130,4 +130,4 @@ mojo-compiler = "==1.2.0"
 [package.run-dependencies]
 mojo-compiler = ">=1.2.0,<2"
 libpq = ">=16,<19"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "32a7ef8746bc728f00677ed45641cc4de796a09d" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "f45e780a8de77278c140cee36904e46e93e0ca1c" }
