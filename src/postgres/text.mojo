@@ -49,44 +49,45 @@ def oid_name(oid: UInt32) -> String:
     """Return the PostgreSQL type name for a well-known OID, or `"oid:<n>"`
     for anything this tin does not special-case.
     """
-    if oid == OID_BOOL:
-        return String("bool")
-    elif oid == OID_BYTEA:
-        return String("bytea")
-    elif oid == OID_INT8:
-        return String("int8")
-    elif oid == OID_INT2:
-        return String("int2")
-    elif oid == OID_INT4:
-        return String("int4")
-    elif oid == OID_TEXT:
-        return String("text")
-    elif oid == OID_JSON:
-        return String("json")
-    elif oid == OID_FLOAT4:
-        return String("float4")
-    elif oid == OID_FLOAT8:
-        return String("float8")
-    elif oid == OID_BPCHAR:
-        return String("bpchar")
-    elif oid == OID_VARCHAR:
-        return String("varchar")
-    elif oid == OID_DATE:
-        return String("date")
-    elif oid == OID_TIME:
-        return String("time")
-    elif oid == OID_TIMESTAMP:
-        return String("timestamp")
-    elif oid == OID_TIMESTAMPTZ:
-        return String("timestamptz")
-    elif oid == OID_NUMERIC:
-        return String("numeric")
-    elif oid == OID_UUID:
-        return String("uuid")
-    elif oid == OID_JSONB:
-        return String("jsonb")
-    else:
-        return String("oid:", oid)
+    match oid:
+        case == OID_BOOL:
+            return String("bool")
+        case == OID_BYTEA:
+            return String("bytea")
+        case == OID_INT8:
+            return String("int8")
+        case == OID_INT2:
+            return String("int2")
+        case == OID_INT4:
+            return String("int4")
+        case == OID_TEXT:
+            return String("text")
+        case == OID_JSON:
+            return String("json")
+        case == OID_FLOAT4:
+            return String("float4")
+        case == OID_FLOAT8:
+            return String("float8")
+        case == OID_BPCHAR:
+            return String("bpchar")
+        case == OID_VARCHAR:
+            return String("varchar")
+        case == OID_DATE:
+            return String("date")
+        case == OID_TIME:
+            return String("time")
+        case == OID_TIMESTAMP:
+            return String("timestamp")
+        case == OID_TIMESTAMPTZ:
+            return String("timestamptz")
+        case == OID_NUMERIC:
+            return String("numeric")
+        case == OID_UUID:
+            return String("uuid")
+        case == OID_JSONB:
+            return String("jsonb")
+        case _:
+            return String("oid:", oid)
 
 
 def is_text_oid(oid: UInt32) -> Bool:
