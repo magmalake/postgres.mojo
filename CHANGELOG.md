@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-24
+
+### Changed
+
+- Built with Mojo 1.2.0, against the layer-1 tins' 1.2.0
+  releases. The published 0.3.1 was built with 1.1.0, whose
+  precompiled `.mojoc` a 1.2.0 compiler refuses.
+
 ## [0.3.1] — 2026-09-26
 
 ### Changed
