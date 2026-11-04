@@ -10,7 +10,8 @@ varargs -- so there is nothing for a shim to flatten.  Resolving the symbols at
 compile time instead fails on Linux with ``JIT session error: Symbols not
 found`` (the failure sqlite.mojo hit), because the Mojo JIT would have to find
 them itself.  Loading the library at run time sidesteps that, and it also lets
-us pick the conda-forge build out of ``$CONDA_PREFIX`` -- which matters,
+us pick the conda-forge build out of ``$CONDA_PREFIX`` (or, without it, the
+environment the binary was built in, through its rpath) -- which matters,
 because that build links OpenSSL, krb5 and OpenLDAP: it is the one where
 ``sslmode=require`` works.  ``RTLD.GLOBAL`` makes those transitive dependencies
 visible to libpq and to each other, and ``RTLD.NODELETE`` turns ``dlclose``
@@ -50,8 +51,9 @@ Do not call `LibpqFFI` methods from user code -- use `connection.mojo`.
 
 from std.ffi import _Global, OwnedDLHandle, RTLD, CStringSpan, c_char
 from std.memory import Pointer
-from std.os import abort, getenv
 from std.sys.info import CompilationTarget
+
+from ._dlopen import open_library
 
 
 # -----------------------------------------------------------------------
@@ -251,30 +253,6 @@ def _libpq_soname() -> String:
         return String("libpq.5.dylib")
 
 
-def _find_libpq_library() -> String:
-    """Locate libpq via ``$CONDA_PREFIX`` (pixi), else fall back to the soname.
-
-    Search order:
-
-    1. ``$CONDA_PREFIX/lib/libpq.so.5`` (Linux) or
-       ``$CONDA_PREFIX/lib/libpq.5.dylib`` (macOS) when the variable is set --
-       the build the pixi manifest pins, linked against the environment's
-       OpenSSL.
-    2. The bare soname, resolved through ``LD_LIBRARY_PATH`` or the dyld search
-       path, for installs outside a conda environment.
-
-    `LibpqFFI.__init__` tries this path first and the bare soname second, so a
-    stale or partial ``$CONDA_PREFIX`` can still find a system libpq.
-
-    Returns:
-        A path or soname suitable for `OwnedDLHandle`.
-    """
-    var prefix = getenv("CONDA_PREFIX", "")
-    if prefix:
-        return prefix + "/lib/" + _libpq_soname()
-    return _libpq_soname()
-
-
 # -----------------------------------------------------------------------
 # LibpqFFI
 # -----------------------------------------------------------------------
@@ -367,17 +345,18 @@ struct LibpqFFI(Movable):
         """Load libpq and resolve every function pointer.
 
         Args:
-            lib_path: An explicit library path.  When empty,
-                `_find_libpq_library` is used (honouring ``$CONDA_PREFIX``)
-                with the bare soname as a second attempt.
+            lib_path: An explicit library path.  When empty, the soname is
+                looked up by `_dlopen.open_library`: ``$CONDA_PREFIX/lib``,
+                next to the executable and in its ``../lib``, then the
+                dynamic linker's search path (the build environment's lib via
+                the binary's rpath, then the system), so it works with or
+                without ``$CONDA_PREFIX``.
 
         Raises:
-            Error: If neither candidate opens, or a symbol is missing.  The
-                message names both paths that were tried, because the usual
-                cause is a `pixi install` that has not been run.
+            Error: If libpq can't be loaded (the message names every place
+                searched and says to set ``CONDA_PREFIX``), or a symbol is
+                missing.
         """
-        var primary = lib_path if lib_path else _find_libpq_library()
-        var fallback = _libpq_soname()
         # RTLD.NOW:      resolve everything up front, so a truncated or
         #                mismatched library fails here, not mid-query.
         # RTLD.GLOBAL:   libpq's dependencies (OpenSSL, krb5, LDAP) have to be
@@ -387,27 +366,18 @@ struct LibpqFFI(Movable):
         #                OpenSSL state it initialised, resident even if
         #                something else in the process closes libpq.
         comptime FLAGS = RTLD.NOW | RTLD.GLOBAL | RTLD.NODELETE
-        try:
-            self._lib = OwnedDLHandle(primary, FLAGS)
-        except:
-            if primary == fallback:
-                raise Error(
-                    "postgres: could not load libpq ('"
-                    + primary
-                    + "'). Install it (pixi: `libpq`) or put it on the"
-                    " library search path."
-                )
+        if lib_path:
             try:
-                self._lib = OwnedDLHandle(fallback, FLAGS)
-            except:
+                self._lib = OwnedDLHandle(lib_path, FLAGS)
+            except e:
                 raise Error(
-                    "postgres: could not load libpq. Tried '"
-                    + primary
-                    + "' and '"
-                    + fallback
-                    + "'. Install it (pixi: `libpq`) or put it on the"
-                    " library search path."
+                    "postgres.mojo: could not load libpq ('",
+                    lib_path,
+                    "'): ",
+                    e,
                 )
+        else:
+            self._lib = open_library("postgres.mojo", _libpq_soname(), FLAGS)
 
         self._fn_lib_version = _dl_sym[def() thin abi("C") -> Int32](
             self._lib, "PQlibVersion"
@@ -1132,12 +1102,25 @@ struct LibpqFFI(Movable):
 # -----------------------------------------------------------------------
 
 
-def _open_ffi() -> LibpqFFI:
-    """`dlopen` libpq and resolve every symbol, once, per process."""
-    try:
-        return LibpqFFI()
-    except e:
-        abort(String("postgres.mojo: ", e))
+struct _Loaded(Movable):
+    """The process-wide `LibpqFFI`, or why libpq couldn't be loaded."""
+
+    var ffi: Optional[LibpqFFI]
+    var error: String
+
+    def __init__(out self):
+        try:
+            self.ffi = LibpqFFI()
+            self.error = String("")
+        except e:
+            self.ffi = None
+            self.error = String(e)
+
+
+def _open_ffi() -> _Loaded:
+    """`dlopen` libpq and resolve every symbol, once, per process.  A failure
+    is kept and raised by `libpq()` on every use, never an abort."""
+    return _Loaded()
 
 
 comptime _FFI = _Global["postgres_mojo_libpq", _open_ffi]
@@ -1161,11 +1144,15 @@ def libpq() raises -> ref[MutUntrackedOrigin] LibpqFFI:
         call and reusing it forever after.
 
     Raises:
-        Error: Never in practice -- a failure to load aborts inside `_open_ffi`
-            with the diagnostic from `LibpqFFI.__init__`, because there is no
-            sensible way to carry on without libpq.
+        Error: If libpq can't be loaded: the diagnostic from
+            `LibpqFFI.__init__`, which names every place searched and says
+            to set ``CONDA_PREFIX``.  It is kept, so every later call raises
+            the same Error.
     """
-    return _FFI.get_or_create_ptr()[]
+    ref loaded = _FFI.get_or_create_ptr()[]
+    if not loaded.ffi:
+        raise Error(loaded.error)
+    return loaded.ffi.unsafe_value()
 
 
 # -----------------------------------------------------------------------

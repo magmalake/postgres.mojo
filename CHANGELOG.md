@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- libpq is found without `CONDA_PREFIX`: after `$CONDA_PREFIX/lib`, the
+  tin looks next to the executable, in its `../lib`, and then asks the
+  dynamic linker, which searches the binary's rpath (the environment
+  `mojo build` ran in) before the system. A binary built with `pixi run
+  mojo build` now runs from a plain shell with the environment's libpq
+  rather than whatever the system has. The search lives in
+  `src/postgres/_dlopen.mojo`, shared with the other magmalake tins that
+  load a library.
+- A libpq that can't be loaded is an Error raised by the first call that
+  needs it, naming every place searched and saying to set `CONDA_PREFIX`.
+  It used to abort the process.
+
 ## [0.3.2] - 2026-10-24
 
 ### Changed

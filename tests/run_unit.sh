@@ -16,4 +16,12 @@ for f in tests/test_*.mojo; do
         echo "!! FAILED: $f"; status=1
     fi
 done
+# Again with CONDA_PREFIX unset, as from a plain shell: libpq must then be
+# found through the binary's rpath (src/postgres/_dlopen.mojo).
+for name in test_dlopen test_ffi; do
+    echo "== $name (no CONDA_PREFIX)"
+    if ! env -u CONDA_PREFIX "./build/$name"; then
+        echo "!! FAILED without CONDA_PREFIX: $name"; status=1
+    fi
+done
 exit $status

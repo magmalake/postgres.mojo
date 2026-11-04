@@ -417,8 +417,9 @@ pixi run examples          # every examples/*.mojo file, against a live server
 - **Unit tests** (`pixi run unit`, no server) — config rendering, SQLSTATE
   parsing, the text-format codec (including a 4,321-day date sweep and every
   `timestamptz` offset spelling), the `Params` builder, the `COPY` encoder and
-  decoder, and a `PQlibVersion()` call proving libpq loads from
-  `$CONDA_PREFIX`.
+  decoder, and a `PQlibVersion()` call proving libpq loads, from
+  `$CONDA_PREFIX` and again with it unset (through the binary's rpath, as a
+  program run from a plain shell finds it).
 - **Server tests** (`pixi run server`, starts a throwaway cluster) — every
   type round-tripped through `Params` and decoded from a server-side cast,
   NULL vs. empty string, transactions and savepoints, `COPY` in both
