@@ -40,7 +40,7 @@ lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "5799cd5
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
 # Params builder, the COPY encoder, and a PQlibVersion() call that proves the
-# library loads from $CONDA_PREFIX.
+# library loads, from $CONDA_PREFIX and again with it unset.
 unit = "sh tests/run_unit.sh"
 # Everything that needs a live server: run_tests.sh starts one, exports
 # POSTGRES_TEST_DSN, runs the server suite and the psql/psycopg cross-check,
