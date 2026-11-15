@@ -57,7 +57,7 @@ from std.memory import ArcPointer
 
 from ._ffi import PGconnPtr, libpq
 from ._ffi import PGRES_COPY_IN, PGRES_COPY_OUT
-from .connection import (
+from ._cell import (
     _ConnCell,
     _open_conn,
     _raise_error,
