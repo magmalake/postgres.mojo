@@ -153,12 +153,10 @@ from std.time import perf_counter_ns
 from threads import CondVar, CondVarRef, Mutex, MutexRef
 
 from ._ffi import PQTRANS_IDLE, libpq
-from .config import ConnectionConfig
 from .connection import Connection
 from .sqlstate import (
     CONNECTION_DOES_NOT_EXIST,
     PostgresError,
-    SQLCLIENT_UNABLE_TO_ESTABLISH,
     TOO_MANY_CONNECTIONS,
 )
 
