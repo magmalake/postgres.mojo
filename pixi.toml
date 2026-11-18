@@ -131,3 +131,8 @@ mojo-compiler = "==1.2.0"
 mojo-compiler = ">=1.2.0,<2"
 libpq = ">=16,<19"
 threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "f45e780a8de77278c140cee36904e46e93e0ca1c" }
+
+[tool.customs.lints]
+# tests/run_unit.sh builds each unit test on its own; until they share one
+# binary, report it without failing.
+mojo-build-per-test = "warn"
