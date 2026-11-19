@@ -119,7 +119,7 @@ def _is_octal_digit(b: UInt8) -> Bool:
     return b >= UInt8(ord("0")) and b <= UInt8(ord("7"))
 
 
-def _parse_unsigned_digits(s: StringSlice, start: Int, end: Int) -> Int64:
+def _parse_unsigned_digits(s: StringSpan, start: Int, end: Int) -> Int64:
     """Parse `s[byte=start:end]` as an unsigned decimal integer. The caller
     must have already verified every byte in the range is an ASCII digit."""
     var data = s.as_bytes()
@@ -141,7 +141,7 @@ def _zero_pad(v: Int64, width: Int) -> String:
 # ===----------------------------------------------------------------------===#
 
 
-def decode_bool(s: StringSlice) raises -> Bool:
+def decode_bool(s: StringSpan) raises -> Bool:
     """Decode `bool` text. The server always emits `t`/`f`; `true`/`false`
     are also accepted because COPY CSV round-trips can carry them."""
     if s == "t" or s == "true":
@@ -166,7 +166,7 @@ comptime _U64_MAX_MOD10: UInt64 = 5
 
 
 def _decode_signed(
-    s: StringSlice, type_name: String, max_pos: UInt64, max_neg_mag: UInt64
+    s: StringSpan, type_name: String, max_pos: UInt64, max_neg_mag: UInt64
 ) raises -> Int64:
     """Shared strict decimal-integer parser: optional leading `+`/`-`, ASCII
     digits only (no whitespace, no underscores, no base prefixes), and a
@@ -220,15 +220,15 @@ def _decode_signed(
         return Int64(acc)
 
 
-def decode_int16(s: StringSlice) raises -> Int16:
+def decode_int16(s: StringSpan) raises -> Int16:
     return Int16(_decode_signed(s, "int2", 32767, 32768))
 
 
-def decode_int32(s: StringSlice) raises -> Int32:
+def decode_int32(s: StringSpan) raises -> Int32:
     return Int32(_decode_signed(s, "int4", 2147483647, 2147483648))
 
 
-def decode_int64(s: StringSlice) raises -> Int64:
+def decode_int64(s: StringSpan) raises -> Int64:
     return _decode_signed(s, "int8", 9223372036854775807, 9223372036854775808)
 
 
@@ -249,7 +249,7 @@ def encode_int64(v: Int64) -> String:
 # ===----------------------------------------------------------------------===#
 
 
-def decode_float32(s: StringSlice) raises -> Float32:
+def decode_float32(s: StringSpan) raises -> Float32:
     """`atof` already accepts PostgreSQL's `NaN`/`Infinity`/`-Infinity`
     spellings case-insensitively (and the `inf`/`nan` short forms), plus
     standard decimal/scientific notation, so this is a thin wrapper that
@@ -260,7 +260,7 @@ def decode_float32(s: StringSlice) raises -> Float32:
         raise Error(String("postgres.text: invalid float4 text: '", s, "'"))
 
 
-def decode_float64(s: StringSlice) raises -> Float64:
+def decode_float64(s: StringSpan) raises -> Float64:
     try:
         return atof(s)
     except:
@@ -294,7 +294,7 @@ def encode_float64(v: Float64) -> String:
 comptime _HEX_DIGITS: StaticString = "0123456789abcdef"
 
 
-def _hex_nibble(b: UInt8, s: StringSlice) raises -> UInt8:
+def _hex_nibble(b: UInt8, s: StringSpan) raises -> UInt8:
     if b >= UInt8(ord("0")) and b <= UInt8(ord("9")):
         return b - UInt8(ord("0"))
     if b >= UInt8(ord("a")) and b <= UInt8(ord("f")):
@@ -304,7 +304,7 @@ def _hex_nibble(b: UInt8, s: StringSlice) raises -> UInt8:
     raise Error(String("postgres.text: invalid bytea hex text: '", s, "'"))
 
 
-def _decode_bytea_hex(s: StringSlice) raises -> List[UInt8]:
+def _decode_bytea_hex(s: StringSpan) raises -> List[UInt8]:
     var data = s.as_bytes()
     var n = s.byte_length()
     var hex_len = n - 2
@@ -326,7 +326,7 @@ def _decode_bytea_hex(s: StringSlice) raises -> List[UInt8]:
     return out^
 
 
-def _decode_bytea_escape(s: StringSlice) raises -> List[UInt8]:
+def _decode_bytea_escape(s: StringSpan) raises -> List[UInt8]:
     var data = s.as_bytes()
     var n = s.byte_length()
     var invalid_msg = String(
@@ -363,7 +363,7 @@ def _decode_bytea_escape(s: StringSlice) raises -> List[UInt8]:
     return out^
 
 
-def decode_bytea(s: StringSlice) raises -> List[UInt8]:
+def decode_bytea(s: StringSpan) raises -> List[UInt8]:
     """Decode `bytea` text — either the `\\x`-prefixed hex format
     (`bytea_output=hex`, the server default) or the legacy escape format
     (`\\\\` for a literal backslash, `\\ooo` three-octal-digit byte escapes,
@@ -436,13 +436,13 @@ def _civil_from_days(days: Int64) -> Tuple[Int64, Int64, Int64]:
     return (y, m, d)
 
 
-def is_infinite(s: StringSlice) -> Bool:
+def is_infinite(s: StringSpan) -> Bool:
     """True for the literal spellings PostgreSQL uses for the unbounded
     date/timestamp values, `infinity` and `-infinity`."""
     return s == "infinity" or s == "-infinity"
 
 
-def _check_not_bc(s: StringSlice) raises:
+def _check_not_bc(s: StringSpan) raises:
     if s.endswith(" BC"):
         raise Error(
             String(
@@ -468,7 +468,7 @@ def _format_date(y: Int64, m: Int64, d: Int64) -> String:
 
 
 def _parse_date_prefix(
-    s: StringSlice, start: Int
+    s: StringSpan, start: Int
 ) raises -> Tuple[Int64, Int64, Int64, Int]:
     """Parse `YYYY-MM-DD` beginning at byte offset `start`. Returns
     `(year, month, day, end)` where `end` is the byte offset just past the
@@ -509,7 +509,7 @@ def _parse_date_prefix(
     return (year, month, day, i)
 
 
-def _parse_time_prefix(s: StringSlice, start: Int) raises -> Tuple[Int64, Int]:
+def _parse_time_prefix(s: StringSpan, start: Int) raises -> Tuple[Int64, Int]:
     """Parse `HH:MM:SS[.ffffff]` beginning at byte offset `start`. Returns
     `(micros_since_midnight, end)`."""
     var invalid_msg = String("postgres.text: invalid time text: '", s, "'")
@@ -570,7 +570,7 @@ def _parse_time_prefix(s: StringSlice, start: Int) raises -> Tuple[Int64, Int]:
     return (total, i)
 
 
-def decode_date(s: StringSlice) raises -> Int32:
+def decode_date(s: StringSpan) raises -> Int32:
     """Decode `date` text (`YYYY-MM-DD`, year may exceed 4 digits) to days
     since 1970-01-01. `infinity`/`-infinity` and a ` BC` suffix raise —
     read `Result.value()`'s raw text for those instead of the epoch
@@ -594,7 +594,7 @@ def decode_date(s: StringSlice) raises -> Int32:
     return Int32(days)
 
 
-def decode_time(s: StringSlice) raises -> Int64:
+def decode_time(s: StringSpan) raises -> Int64:
     """Decode `time` text (`HH:MM:SS[.ffffff]`) to microseconds since
     midnight."""
     var parsed = _parse_time_prefix(s, 0)
@@ -603,7 +603,7 @@ def decode_time(s: StringSlice) raises -> Int64:
     return parsed[0]
 
 
-def decode_timestamp(s: StringSlice) raises -> Int64:
+def decode_timestamp(s: StringSpan) raises -> Int64:
     """Decode naive `timestamp` text (`YYYY-MM-DD HH:MM:SS[.ffffff]`, no
     zone) to microseconds since 1970-01-01 00:00:00."""
     if is_infinite(s):
@@ -629,7 +629,7 @@ def decode_timestamp(s: StringSlice) raises -> Int64:
     return days * _MICROS_PER_DAY + time_part[0]
 
 
-def decode_timestamptz(s: StringSlice) raises -> Int64:
+def decode_timestamptz(s: StringSpan) raises -> Int64:
     """Decode zoned `timestamptz` text (`YYYY-MM-DD HH:MM:SS[.ffffff]` plus
     an offset `+HH`, `+HH:MM`, or `+HH:MM:SS`, either sign) to UTC
     microseconds since 1970-01-01 00:00:00."""
@@ -752,7 +752,7 @@ def encode_timestamptz(micros: Int64) -> String:
 # ===----------------------------------------------------------------------===#
 
 
-def decode_text(s: StringSlice) -> String:
+def decode_text(s: StringSpan) -> String:
     """Identity decode, so a dispatch-by-OID table can call every decoder
     uniformly."""
     return String(s)

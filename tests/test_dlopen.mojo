@@ -36,7 +36,10 @@ def test_missing_library_raises() raises:
     except e:
         var msg = String(e)
         assert_true(
-            msg.startswith("postgres.mojo: cannot load libmagmalake-missing.so"), msg
+            msg.startswith(
+                "postgres.mojo: cannot load libmagmalake-missing.so"
+            ),
+            msg,
         )
         assert_true("CONDA_PREFIX" in msg, msg)
         return

@@ -139,7 +139,7 @@ struct CopyEncoder(Movable):
         else:
             self._row_has_field = True
 
-    def field(mut self, v: StringSlice):
+    def field(mut self, v: StringSpan):
         """Append a non-NULL field, escaping/quoting it for `self.format`."""
         self._before_field()
         if self.format == COPY_CSV:
@@ -168,7 +168,7 @@ struct CopyEncoder(Movable):
                 self.null()
         self.end_row()
 
-    def _encode_text_field(mut self, v: StringSlice):
+    def _encode_text_field(mut self, v: StringSpan):
         # Named escapes take priority over the generic delimiter-escape rule
         # below: a tab is always written as `\t` (matching what `psql`
         # emits), never as backslash + a raw tab byte, even though the
@@ -201,7 +201,7 @@ struct CopyEncoder(Movable):
             else:
                 self._buf.append(b)
 
-    def _csv_needs_quote(self, v: StringSlice) -> Bool:
+    def _csv_needs_quote(self, v: StringSpan) -> Bool:
         # Empty is quoted so it round-trips distinctly from an unquoted-empty
         # NULL marker; a field that happens to equal the null string is
         # quoted for the same reason.
@@ -214,7 +214,7 @@ struct CopyEncoder(Movable):
                 return True
         return False
 
-    def _encode_csv_field(mut self, v: StringSlice):
+    def _encode_csv_field(mut self, v: StringSpan):
         if self._csv_needs_quote(v):
             self._buf.append(_DQUOTE)
             for b in v.as_bytes():
@@ -355,7 +355,7 @@ def _raw_equals_null(
 
 
 def _decode_text_row(
-    line: StringSlice, delim_byte: UInt8, null_string: String
+    line: StringSpan, delim_byte: UInt8, null_string: String
 ) raises -> List[Optional[String]]:
     var result = List[Optional[String]]()
     var bytes = line.as_bytes()
@@ -388,7 +388,7 @@ def _decode_text_row(
 
 
 def _decode_csv_row(
-    line: StringSlice, delim_byte: UInt8, null_string: String
+    line: StringSpan, delim_byte: UInt8, null_string: String
 ) raises -> List[Optional[String]]:
     var result = List[Optional[String]]()
     var bytes = line.as_bytes()
@@ -435,7 +435,7 @@ def _decode_csv_row(
 
 
 def decode_row(
-    line: StringSlice, format: Int, delimiter: String, null: String
+    line: StringSpan, format: Int, delimiter: String, null: String
 ) raises -> List[Optional[String]]:
     """Parse one line of `COPY ... TO STDOUT` output into its fields.
 
@@ -476,7 +476,7 @@ struct CopyDecoder(Movable):
         else:
             self.null_string = _default_null(format)
 
-    def decode_row(self, line: StringSlice) raises -> List[Optional[String]]:
+    def decode_row(self, line: StringSpan) raises -> List[Optional[String]]:
         return decode_row(line, self.format, self.delimiter, self.null_string)
 
 

@@ -5,43 +5,21 @@
 # Run under `scripts/with-pg-server.sh`, which starts a throwaway cluster and
 # exports $POSTGRES_TEST_DSN. `pixi run pool` does that for you.
 #
-# Two things here are not in tests/run_tests.sh:
+# `postgres.pool` imports the threads-mojo tin, which arrives as a .mojoc in
+# $CONDA_PREFIX/lib/mojo, built with the same pinned compiler as this
+# workspace.
 #
-#   (a) The toolchain gate. `postgres.pool` imports the threads-mojo tin,
-#       which arrives as a .mojoc compiled by mojo 1.2.0 — and a Mojo
-#       package is only readable by the compiler version that built it. On the
-#       nightly toolchain the import simply does not resolve, so this skips
-#       with a reason instead of failing, exactly as with-pg-server.sh skips a
-#       machine that cannot start PostgreSQL. The `stable` environment is
-#       where the pool is actually exercised, and CI runs both.
-#
-#   (b) The negative control. tests/pool_escape_control.mojo is built a second
-#       time against a copy of src/ with the refcount check removed, and this
-#       script fails unless that copy *fails*. An escape that goes undetected
-#       is a silent race rather than a visible error, so the one assertion
-#       standing between the pool and that outcome has to be shown to have
-#       teeth rather than merely to be green.
+# One thing here is not in tests/run_tests.sh: the negative control.
+# tests/pool_escape_control.mojo is built a second time against a copy of src/
+# with the refcount check removed, and this script fails unless that copy
+# *fails*. An escape that goes undetected is a silent race rather than a
+# visible error, so the one assertion standing between the pool and that
+# outcome has to be shown to have teeth rather than merely to be green.
 set -eu
 cd "$(dirname "$0")/.."
 
 mkdir -p build
 INCLUDES="-I src -I $CONDA_PREFIX/lib/mojo"
-
-# -- (a) can this toolchain read the threads-mojo package at all? ------------
-cat > build/pool-toolchain-probe.mojo <<'EOF'
-from threads import num_cpus
-def main() raises:
-    print(num_cpus())
-EOF
-if ! mojo build build/pool-toolchain-probe.mojo $INCLUDES \
-        -o build/pool-toolchain-probe >build/pool-toolchain-probe.log 2>&1
-then
-    echo "== pool tests: skipped — this toolchain cannot read the threads-mojo"
-    echo "   package (a .mojoc is readable only by the compiler that built"
-    echo "   it, and tins are built with mojo 1.2.0). Run \`pixi run -e stable"
-    echo "   pool\`."
-    exit 0
-fi
 
 # -- the suite ---------------------------------------------------------------
 echo "== building tests/pool_test.mojo"
@@ -49,7 +27,7 @@ mojo build tests/pool_test.mojo $INCLUDES -o build/pool-test
 echo "== running pool-test"
 ./build/pool-test
 
-# -- (b) the negative control ------------------------------------------------
+# -- the negative control ----------------------------------------------------
 echo "== building the escape control against src/"
 mojo build tests/pool_escape_control.mojo $INCLUDES -o build/pool-escape-control
 echo "== running the escape control (must pass)"

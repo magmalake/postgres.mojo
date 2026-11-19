@@ -81,7 +81,7 @@ def _trim(s: String) -> String:
         end -= 1
     if start >= end:
         return String("")
-    return String(StringSlice(unsafe_from_utf8=Span(b)[start:end]))
+    return String(StringSpan(unsafe_from_utf8=Span(b)[start:end]))
 
 
 def _result_error(

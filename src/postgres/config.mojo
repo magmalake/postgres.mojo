@@ -43,7 +43,7 @@ def _escape_conninfo_value(value: String) -> String:
             out.append(UInt8(ord("\\")))
         out.append(b)
     out.append(UInt8(ord("'")))
-    return String(StringSlice(unsafe_from_utf8=Span(out)))
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
 
 
 struct ConnectionConfig(Copyable, Movable):

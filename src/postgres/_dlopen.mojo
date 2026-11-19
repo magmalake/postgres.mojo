@@ -37,8 +37,7 @@ from std.sys import CompilationTarget
 
 
 def executable_dir() -> String:
-    """The running executable's directory, symlinks resolved; "" if unknown.
-    """
+    """The running executable's directory, symlinks resolved; "" if unknown."""
     try:
         comptime if CompilationTarget.is_macos():
             var buf = List[UInt8](length=4096, fill=0)
