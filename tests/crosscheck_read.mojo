@@ -201,7 +201,7 @@ def _assert_edge_max(row: Row) raises:
 def _check_psql_parity(mut conn: Connection, path: String) raises:
     var f = open(path, "r")
     var content = f.read()
-    f.close()
+    f^.close()
 
     var split = split_rows(Span(content.as_bytes()))
     var lines = split[0].copy()

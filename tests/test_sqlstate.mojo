@@ -82,8 +82,8 @@ def test_format_detail_without_hint() raises:
         sqlstate="23502", message="null value", detail="Column x is null."
     )
     var got = err.format()
-    assert_true(got.find("DETAIL: Column x is null.") >= 0)
-    assert_true(got.find("HINT:") < 0)
+    assert_true("DETAIL: Column x is null." in got)
+    assert_true("HINT:" not in got)
 
 
 def test_format_hint_without_detail() raises:
@@ -91,8 +91,8 @@ def test_format_hint_without_detail() raises:
         sqlstate="42703", message="column missing", hint="Check spelling."
     )
     var got = err.format()
-    assert_true(got.find("HINT: Check spelling.") >= 0)
-    assert_true(got.find("DETAIL:") < 0)
+    assert_true("HINT: Check spelling." in got)
+    assert_true("DETAIL:" not in got)
 
 
 def test_format_with_sql() raises:
@@ -118,14 +118,16 @@ def test_format_full() raises:
     )
     var got = err.format()
     var expect_prefix = "postgres [SQLSTATE 23505] duplicate key"
-    assert_true(got.find(expect_prefix) == 0)
-    assert_true(got.find("DETAIL: Key (id)=(1) already exists.") > 0)
-    assert_true(got.find("HINT: Use ON CONFLICT.") > 0)
-    assert_true(got.find("SQL: INSERT INTO t VALUES (1)") > 0)
+    assert_true(got.find(expect_prefix).or_else(-1) == 0)
+    assert_true(
+        got.find("DETAIL: Key (id)=(1) already exists.").or_else(-1) > 0
+    )
+    assert_true(got.find("HINT: Use ON CONFLICT.").or_else(-1) > 0)
+    assert_true(got.find("SQL: INSERT INTO t VALUES (1)").or_else(-1) > 0)
     # Lines appear in DETAIL, HINT, SQL order.
-    var detail_pos = got.find("DETAIL:")
-    var hint_pos = got.find("HINT:")
-    var sql_pos = got.find("SQL:")
+    var detail_pos = got.find("DETAIL:").or_else(-1)
+    var hint_pos = got.find("HINT:").or_else(-1)
+    var sql_pos = got.find("SQL:").or_else(-1)
     assert_true(detail_pos < hint_pos)
     assert_true(hint_pos < sql_pos)
 
@@ -137,8 +139,8 @@ def test_sql_under_limit_is_not_truncated() raises:
     var sql = "SELECT 1"
     var err = PostgresError(message="x", sql=sql)
     var got = err.format()
-    assert_true(got.find("SQL: SELECT 1") >= 0)
-    assert_true(got.find("…") < 0)
+    assert_true("SQL: SELECT 1" in got)
+    assert_true("…" not in got)
 
 
 def test_sql_exactly_200_is_not_truncated() raises:
@@ -148,8 +150,8 @@ def test_sql_exactly_200_is_not_truncated() raises:
     assert_equal(sql.byte_length(), 200)
     var err = PostgresError(message="x", sql=sql)
     var got = err.format()
-    assert_true(got.find("…") < 0)
-    assert_true(got.find("SQL: " + sql) >= 0)
+    assert_true("…" not in got)
+    assert_true("SQL: " + sql in got)
 
 
 def test_sql_over_200_is_truncated_with_ellipsis() raises:
@@ -159,13 +161,13 @@ def test_sql_over_200_is_truncated_with_ellipsis() raises:
     var err = PostgresError(message="x", sql=sql)
     var got = err.format()
     var marker = "SQL: "
-    var start = got.find(marker)
+    var start = got.find(marker).or_else(-1)
     assert_true(start >= 0)
     var sql_line_start = start + marker.byte_length()
     var sql_line = String("")
     var b = got.as_bytes()
     for i in range(sql_line_start, len(b)):
-        sql_line += String(StringSlice(unsafe_from_utf8=Span(b)[i : i + 1]))
+        sql_line += String(StringSpan(unsafe_from_utf8=Span(b)[i : i + 1]))
     # 200 'a's plus the ellipsis marker.
     var expect = String("")
     for _ in range(200):
@@ -178,9 +180,9 @@ def test_sql_newlines_collapsed_to_spaces() raises:
     # Each CR and LF byte becomes one space, so "\r\n" becomes two spaces.
     var err = PostgresError(message="x", sql="SELECT 1\nFROM t\r\nWHERE x=1")
     var got = err.format()
-    assert_true(got.find("SQL: SELECT 1 FROM t  WHERE x=1") >= 0)
-    var sql_marker = got.find("SQL:")
-    assert_true(got.find("\n", sql_marker + 4) < 0)
+    assert_true("SQL: SELECT 1 FROM t  WHERE x=1" in got)
+    var sql_marker = got.find("SQL:").or_else(-1)
+    assert_true(got.find("\n", sql_marker + 4).or_else(-1) < 0)
 
 
 # ── sqlstate_of() ────────────────────────────────────────────────────────

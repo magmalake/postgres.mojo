@@ -75,7 +75,7 @@ def _substr(s: String, start: Int, end: Int) -> String:
     var z = end if end < len(b) else len(b)
     if a >= z:
         return String("")
-    return String(StringSlice(unsafe_from_utf8=Span(b)[a:z]))
+    return String(StringSpan(unsafe_from_utf8=Span(b)[a:z]))
 
 
 def _is_sqlstate_shaped(code: String) -> Bool:
@@ -105,11 +105,11 @@ def sqlstate_of(message: String) -> String:
     brackets isn't exactly five uppercase-alphanumeric characters (a
     truncated or hand-edited message)."""
     var prefix = String(_TOKEN_PREFIX)
-    var start = message.find(prefix)
+    var start = message.find(prefix).or_else(-1)
     if start < 0:
         return ""
     var code_start = start + prefix.byte_length()
-    var end = message.find(String(_TOKEN_SUFFIX), code_start)
+    var end = message.find(String(_TOKEN_SUFFIX), code_start).or_else(-1)
     if end < 0:
         return ""
     var code = _substr(message, code_start, end)
@@ -308,7 +308,7 @@ def _display_sql(sql: String) -> String:
             flattened.append(UInt8(ord(" ")))
         else:
             flattened.append(c)
-    var collapsed = String(StringSlice(unsafe_from_utf8=Span(flattened)))
+    var collapsed = String(StringSpan(unsafe_from_utf8=Span(flattened)))
 
     var out = String("")
     var count = 0

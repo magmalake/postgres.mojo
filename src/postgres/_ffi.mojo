@@ -179,7 +179,7 @@ def _cstr_to_string(addr: Int) -> String:
     if addr == 0:
         return String("")
     var p = Pointer[c_char, MutUntrackedOrigin](unsafe_from_address=addr)
-    return String(StringSlice(unsafe_from_utf8=CStringSpan(unsafe_from_ptr=p)))
+    return String(StringSpan(unsafe_from_utf8=CStringSpan(unsafe_from_ptr=p)))
 
 
 def _c_string(s: String) -> List[UInt8]:

@@ -10,7 +10,7 @@ from postgres.config import ConnectionConfig
 
 
 def _contains(haystack: String, needle: String) -> Bool:
-    return haystack.find(needle) >= 0
+    return needle in haystack
 
 
 # ── ported from test_smoke.mojo ──────────────────────────────────────────
@@ -99,8 +99,8 @@ def test_set_replaces_existing_key() raises:
     assert_true(_contains(s, "options=second"))
     assert_true(not _contains(s, "first"))
     # Replacing in place means the key appears exactly once.
-    var first_pos = s.find("options=")
-    var second_pos = s.find("options=", first_pos + 1)
+    var first_pos = s.find("options=").or_else(-1)
+    var second_pos = s.find("options=", first_pos + 1).or_else(-1)
     assert_true(second_pos < 0)
 
 
@@ -110,9 +110,9 @@ def test_extra_key_order_is_insertion_order() raises:
     cfg.set("a_second", "2")
     cfg.set("m_third", "3")
     var s = cfg.to_conninfo()
-    var pos_z = s.find("z_first=1")
-    var pos_a = s.find("a_second=2")
-    var pos_m = s.find("m_third=3")
+    var pos_z = s.find("z_first=1").or_else(-1)
+    var pos_a = s.find("a_second=2").or_else(-1)
+    var pos_m = s.find("m_third=3").or_else(-1)
     assert_true(pos_z >= 0 and pos_a >= 0 and pos_m >= 0)
     assert_true(pos_z < pos_a)
     assert_true(pos_a < pos_m)

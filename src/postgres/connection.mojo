@@ -158,7 +158,7 @@ def _quote_ident(name: String) -> String:
             out.append(b)
         out.append(b)
     out.append(UInt8(ord('"')))
-    return String(StringSlice(unsafe_from_utf8=Span(out)))
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
 
 
 struct _Bound(Movable):
