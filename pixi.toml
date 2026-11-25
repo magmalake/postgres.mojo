@@ -20,7 +20,7 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 # it moves across all magmalake tins together. `mojo` rather than just
 # `mojo-compiler`, for the `mojo format` that `format` and `format-check` run.
 [dependencies]
-mojo = "==1.3.0.dev2026111805"
+mojo = "==1.3.0.dev2026112505"
 # libpq is what the FFI dlopens ($CONDA_PREFIX/lib/libpq.{so.5,5.dylib}). The
 # conda-forge build links OpenSSL, so `sslmode=require` works out of the box.
 libpq = ">=16,<19"
@@ -37,11 +37,11 @@ psycopg = ">=3.2"
 # concurrency tests hammer it with. Pinned to a pushed revision — a package
 # dependency has to name a published rev, never local HEAD, or a consumer
 # cannot resolve it.
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "c9da1a84f4f2d624043df97b90bb44f8e8b5256b" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "11f3241ff4233a15a0fd7c56b22102b26aa5cf00" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "81cac02a78a8cfd48a9807dda68f8d7d2f013791" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "b73d03bbfa458417cf9eed56f4e3b7a092d73969" }
 
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
@@ -80,7 +80,7 @@ format-check = { cmd = "mojo format src tests examples bench && git diff --exit-
 # The package is built with the same pinned nightly as this workspace; a
 # precompiled Mojo package loads only in the compiler version that built it.
 [feature.bench.dependencies]
-bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "4cb109089ae3117c511d7aff061bb30e28b8a17e" }
+bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "3c5bfdb78bf5fa3082482a200f3ba01ad6466069" }
 
 [feature.bench.tasks]
 bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_postgres.mojo -o build/bench-postgres && sh scripts/with-pg-server.sh ./build/bench-postgres"
@@ -114,16 +114,16 @@ extra-args = ["-I", "$PREFIX/lib/mojo"]
 # pinned to a commit rather than by path, because a published package has to
 # be self-contained.
 [package.host-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "c9da1a84f4f2d624043df97b90bb44f8e8b5256b" }
+mojo-compiler = "==1.3.0.dev2026112505"
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "11f3241ff4233a15a0fd7c56b22102b26aa5cf00" }
 
 [package.build-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 
 [package.run-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 libpq = ">=16,<19"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "c9da1a84f4f2d624043df97b90bb44f8e8b5256b" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "11f3241ff4233a15a0fd7c56b22102b26aa5cf00" }
 
 [tool.customs.lints]
 # tests/run_unit.sh builds each unit test on its own; until they share one
