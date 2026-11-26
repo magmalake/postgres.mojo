@@ -400,7 +400,7 @@ scan benchmark pays for, arriving as digits and staying a `String`.
 ## Test
 
 ```sh
-pixi run test              # unit + server + crosscheck + pool (Mojo 1.3.0.dev2026112505)
+pixi run test              # unit + server + crosscheck + pool (Mojo 1.3.0.dev2026112605)
 pixi run pool              # just the pool suite and its negative control
 pixi run examples          # every examples/*.mojo file, against a live server
 ```
