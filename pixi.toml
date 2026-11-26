@@ -4,7 +4,7 @@ authors = [
     "Marius S <39998+winding-lines@users.noreply.github.com>",
 ]
 name = "postgres.mojo"
-version = "0.4.1"
+version = "0.4.2"
 description = "A Mojo PostgreSQL client over libpq via FFI: connections, parameterized statements, typed text-format results, transactions and COPY."
 license = "Apache-2.0"
 preview = ["pixi-build"]
@@ -37,11 +37,11 @@ psycopg = ">=3.2"
 # concurrency tests hammer it with. Pinned to a pushed revision — a package
 # dependency has to name a published rev, never local HEAD, or a consumer
 # cannot resolve it.
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "d86b368e4aabb3c9a09b0f54d117230a404e4258" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "215abd5c3fd47e38ef14b44fd32dceb6059c134f" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "076a7a349917151ff8016079a036654865b3ccc1" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "d52d43d575bb3d82e3cce43ce93bf4e4d6d89923" }
 
 [tasks]
 # Server-free: config rendering, SQLSTATE parsing, the text-format codec, the
@@ -93,7 +93,7 @@ bench = ["bench"]
 # Mojo import stays `from postgres import …`.
 [package]
 name = "postgres-mojo"
-version = "0.4.1"
+version = "0.4.2"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }
@@ -115,7 +115,7 @@ extra-args = ["-I", "$PREFIX/lib/mojo"]
 # be self-contained.
 [package.host-dependencies]
 mojo-compiler = "==1.3.0.dev2026112605"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "d86b368e4aabb3c9a09b0f54d117230a404e4258" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "215abd5c3fd47e38ef14b44fd32dceb6059c134f" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.3.0.dev2026112605"
@@ -123,7 +123,7 @@ mojo-compiler = "==1.3.0.dev2026112605"
 [package.run-dependencies]
 mojo-compiler = "==1.3.0.dev2026112605"
 libpq = ">=16,<19"
-threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "d86b368e4aabb3c9a09b0f54d117230a404e4258" }
+threads-mojo = { git = "https://github.com/magmalake/threads.mojo", rev = "215abd5c3fd47e38ef14b44fd32dceb6059c134f" }
 
 [tool.customs.lints]
 # tests/run_unit.sh builds each unit test on its own; until they share one
